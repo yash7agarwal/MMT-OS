@@ -25,13 +25,16 @@ from pathlib import Path
 from typing import Any
 
 from agent.flow_explorer_agent import FlowExplorerAgent
+from agent.health_monitor import HealthMonitor
 from agent.scenario_runner_agent import ScenarioRunnerAgent
 from agent.variant_detector import VariantDetector
 from agent.diff_agent import DiffAgent
 from agent.evaluator_agent import EvaluatorAgent
 from agent.report_writer_agent import ReportWriterAgent
+from agent.use_case_registry import UseCaseRegistry
 from tools.android_device import AndroidDevice
 from tools.apk_manager import install_apk, launch_app, get_apk_version
+from tools.emulator_manager import EmulatorManager
 from tools.report_generator import save_json_export, to_jira_issues, to_slack_summary
 from utils.claude_client import ask
 from utils.config import get
@@ -135,6 +138,7 @@ class Orchestrator:
         # Step 2 — Install candidate APK
         logger.info(f"[Orchestrator] Installing candidate APK: {self.candidate_apk}")
         package_name = install_apk(self.candidate_apk, serial=device.serial)
+        self.package_name = package_name  # store for health monitoring + summary
         apk_version = get_apk_version(self.candidate_apk)
         logger.info(
             f"[Orchestrator] Installed: {package_name} "
@@ -146,6 +150,21 @@ class Orchestrator:
         logger.info("[Orchestrator] Launching app for flow exploration...")
         launch_app(package_name, serial=device.serial)
         time.sleep(3)  # allow app to settle
+
+        # Pre-run health check — ensure app launched cleanly before exploration
+        pre_run_monitor = HealthMonitor(device, package_name, self.run_id)
+        pre_run_heal = pre_run_monitor.check_and_heal("pre-run launch")
+        if pre_run_heal.healed and pre_run_heal.gap_type != "APP_RUNNING":
+            logger.warning(
+                f"[Orchestrator] Pre-run recovery performed: "
+                f"gap_type={pre_run_heal.gap_type} action={pre_run_heal.recovery_action}"
+            )
+        elif not pre_run_heal.healed:
+            logger.error(
+                f"[Orchestrator] Pre-run health check FAILED: "
+                f"gap_type={pre_run_heal.gap_type} — continuing anyway, "
+                "but run results may be unreliable."
+            )
 
         explorer = FlowExplorerAgent(
             device=device,
@@ -166,6 +185,9 @@ class Orchestrator:
             self.feature_description, screen_graph, self.acceptance_criteria
         )
         logger.info(f"[Orchestrator] Generated {len(scenarios)} scenarios")
+
+        # Step 4b — Pre-flight coverage gate
+        coverage_report = self._run_preflight_gate(self.feature_description, scenarios)
 
         # Step 5 — Variant fingerprinting per account
         # TODO(v1): In this version, accounts are pre-logged-in manually.
@@ -227,6 +249,7 @@ class Orchestrator:
                 "total_screens": screen_graph["total_screens"],
                 "exploration_summary": screen_graph.get("summary", ""),
             },
+            "coverage_report": coverage_report,
             "results": classified_results,
             "stats": stats,
             "elapsed_seconds": elapsed,
@@ -324,6 +347,139 @@ class Orchestrator:
             ]
 
     # ------------------------------------------------------------------
+    # Pre-flight coverage gate
+    # ------------------------------------------------------------------
+
+    def _run_preflight_gate(
+        self, feature: str, scenarios: list[dict]
+    ) -> dict:
+        """
+        Run the pre-flight coverage gate between scenario generation and execution.
+
+        1. Auto-register any new scenarios into the registry (bootstrap).
+        2. Validate coverage of registered use cases against generated scenarios.
+        3. Log the report. Warn (do not block) on gate failure in v1.
+
+        # TODO(v2): Make gate_fail=True block the run by raising RuntimeError.
+
+        Returns the CoverageReport dict so it can be saved in the run summary.
+        """
+        try:
+            registry = UseCaseRegistry()
+
+            # Bootstrap: register new scenarios that aren't in the registry yet
+            new_cases = registry.auto_register_from_scenarios(feature, scenarios)
+            if new_cases:
+                logger.info(
+                    f"[Orchestrator] Pre-flight: bootstrapped {new_cases} new use cases "
+                    f"into registry for feature '{feature}'."
+                )
+
+            # Validate coverage
+            coverage = registry.validate_coverage(feature, scenarios)
+            logger.info(
+                f"[Orchestrator] Pre-flight coverage report: "
+                f"total_registered={coverage['total_registered']} "
+                f"covered={coverage['covered']} "
+                f"coverage_pct={coverage['coverage_pct']}% "
+                f"gate_pass={coverage['gate_pass']}"
+            )
+
+            if not coverage["gate_pass"]:
+                uncovered_list = ", ".join(coverage["uncovered"][:10])
+                critical_list = ", ".join(coverage["critical_uncovered"])
+                logger.warning(
+                    f"[Orchestrator] PRE-FLIGHT GATE FAILED — coverage {coverage['coverage_pct']}% "
+                    f"(threshold 80%). Uncovered: [{uncovered_list}]. "
+                    f"Critical uncovered: [{critical_list}]. "
+                    "Continuing run (warn-only in v1)."
+                    # TODO(v2): raise RuntimeError here to block the run.
+                )
+            else:
+                logger.info("[Orchestrator] Pre-flight gate PASSED.")
+
+            return dict(coverage)
+
+        except Exception as e:
+            logger.error(
+                f"[Orchestrator] Pre-flight gate raised an unexpected error: {e}. "
+                "Skipping coverage check and continuing run."
+            )
+            return {
+                "total_registered": 0,
+                "covered": 0,
+                "uncovered": [],
+                "coverage_pct": 100.0,
+                "critical_uncovered": [],
+                "gate_pass": True,
+                "error": str(e),
+            }
+
+    # ------------------------------------------------------------------
+    # Cloud entry point
+    # ------------------------------------------------------------------
+
+    def run_cold_start(
+        self,
+        apk_path: str,
+        feature: str,
+        accounts: list[dict],
+        package_name: str | None = None,
+        avd_name: str = "mmt_test",
+        headless: bool = True,
+        **kwargs,
+    ) -> dict:
+        """
+        Cloud/CI entry point: start the emulator, install the APK, then run the
+        normal UAT flow.
+
+        Uses EmulatorManager.cold_start_for_cloud() to handle the full device
+        bootstrap sequence before delegating to the standard run() method.
+
+        Args:
+            apk_path:     Path to the candidate APK.
+            feature:      Human-readable feature description for this run.
+            accounts:     List of account dicts with 'id', 'email', 'password'.
+            package_name: Optional package name (extracted from APK if not given).
+            avd_name:     AVD name to start (default: mmt_test).
+            headless:     Run emulator without a window — for cloud/CI (default: True).
+            **kwargs:     Additional keyword arguments forwarded to Orchestrator.__init__.
+
+        Returns:
+            The run summary dict from run().
+        """
+        logger.info(
+            f"[Orchestrator] cold_start_for_cloud: AVD={avd_name}, "
+            f"headless={headless}, apk={apk_path}"
+        )
+
+        manager = EmulatorManager(avd_name=avd_name, headless=headless)
+        cold_start_info = manager.cold_start_for_cloud(
+            apk_path=apk_path,
+            package_name=package_name,
+        )
+
+        logger.info(
+            f"[Orchestrator] Cold start complete: serial={cold_start_info['serial']}, "
+            f"package={cold_start_info['package_name']}, "
+            f"installed_fresh={cold_start_info['installed_fresh']}"
+        )
+
+        # Re-initialise the orchestrator with the resolved package and run
+        # (The normal run() will re-install + re-launch, which is intentional
+        # for consistent state. The cold_start_for_cloud above ensures the
+        # device is fully booted and the package manager is ready.)
+        orch = Orchestrator(
+            candidate_apk=apk_path,
+            feature_description=feature,
+            accounts=accounts,
+            **kwargs,
+        )
+        run_summary = orch.run()
+        run_summary["cold_start_info"] = cold_start_info
+        return run_summary
+
+    # ------------------------------------------------------------------
     # Parallel scenario execution
     # ------------------------------------------------------------------
 
@@ -368,6 +524,7 @@ class Orchestrator:
                 account_id=account["id"],
                 feature_description=self.feature_description,
                 run_id=run_id,
+                package_name=getattr(self, "package_name", ""),
             )
             return runner.run()
 

@@ -5,6 +5,11 @@ Compares baseline vs candidate build screenshots for the same flow.
 Uses visual diff + Claude analysis to produce structured findings.
 
 Runs as a subagent — receives file paths, returns structured JSON.
+
+Figma mode:
+    If figma_file_id and figma_mappings are provided to __init__(),
+    DiffAgent delegates to FigmaComparator instead of pixel diff.
+    Existing baseline/candidate comparison is fully backward-compatible.
 """
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from typing import Optional
 
 from tools.visual_diff import compare_screenshots, batch_compare
 from utils.claude_client import ask
@@ -54,6 +60,12 @@ class DiffAgent:
 
     Pairs screenshots by step label, runs visual diff, then uses Claude to
     classify each change as intentional or a regression candidate.
+
+    Figma mode (optional):
+        Pass figma_file_id and figma_mappings to __init__() to switch into
+        design-validation mode using FigmaComparator instead of pixel diff.
+        Baseline/candidate dirs are still accepted but are unused in Figma mode
+        unless analyze() is called directly.
     """
 
     def __init__(
@@ -62,11 +74,17 @@ class DiffAgent:
         candidate_dir: str,
         feature_description: str,
         run_id: str,
+        figma_file_id: Optional[str] = None,
+        figma_mappings: Optional[list[dict]] = None,
     ):
         self.baseline_dir = baseline_dir
         self.candidate_dir = candidate_dir
         self.feature_description = feature_description
         self.run_id = run_id
+
+        # Figma mode config
+        self.figma_file_id = figma_file_id
+        self.figma_mappings = figma_mappings or []
 
         # Diff images are saved alongside the candidate screenshots
         self._diff_dir = str(Path(candidate_dir) / "diffs")
@@ -312,3 +330,90 @@ class DiffAgent:
             "comparisons": [],
             "summary": "No screenshots found to compare.",
         }
+
+    # ------------------------------------------------------------------
+    # Figma mode
+    # ------------------------------------------------------------------
+
+    def run_figma_validation(
+        self,
+        figma_file_id: Optional[str] = None,
+        figma_mappings: Optional[list[dict]] = None,
+    ) -> dict:
+        """
+        Run design validation against Figma frames instead of a baseline APK.
+
+        Uses the FigmaComparator to fetch Figma frames and compare them against
+        screenshots found in self.candidate_dir.
+
+        Args:
+            figma_file_id:  Figma file ID (overrides self.figma_file_id if provided).
+            figma_mappings: [{"screen_name": str, "figma_node_id": str}]
+                            Overrides self.figma_mappings if provided.
+
+        Returns:
+            The result dict from FigmaComparator.run_design_validation().
+        """
+        from agent.figma_comparator import FigmaComparator  # noqa: PLC0415
+
+        effective_file_id = figma_file_id or self.figma_file_id
+        effective_mappings = figma_mappings or self.figma_mappings
+
+        if not effective_file_id:
+            raise ValueError(
+                "figma_file_id is required for Figma validation. "
+                "Pass it to run_figma_validation() or DiffAgent.__init__()."
+            )
+
+        if not effective_mappings:
+            raise ValueError(
+                "figma_mappings is required for Figma validation. "
+                "Pass it to run_figma_validation() or DiffAgent.__init__()."
+            )
+
+        # Collect screenshots from candidate_dir
+        screenshots = self._collect_screenshots(self.candidate_dir)
+        if not screenshots:
+            logger.warning(
+                f"[DiffAgent] No screenshots found in candidate_dir: {self.candidate_dir}"
+            )
+
+        comparator = FigmaComparator(
+            figma_file_id=effective_file_id,
+            run_id=self.run_id,
+        )
+
+        logger.info(
+            f"[DiffAgent] Starting Figma validation: run_id={self.run_id} "
+            f"file_id={effective_file_id} screens={len(screenshots)}"
+        )
+
+        result = comparator.run_design_validation(
+            screenshots=screenshots,
+            figma_mappings=effective_mappings,
+        )
+
+        # Attach feature context
+        result["feature"] = self.feature_description
+        return result
+
+    def _collect_screenshots(self, directory: str) -> list[dict]:
+        """
+        Collect all PNG screenshots from a directory.
+
+        Returns [{"path": str, "screen_name": str}] sorted by filename.
+        """
+        if not os.path.isdir(directory):
+            logger.warning(f"[DiffAgent] Screenshot directory not found: {directory}")
+            return []
+
+        screenshots = []
+        for fname in sorted(os.listdir(directory)):
+            if not fname.lower().endswith(".png"):
+                continue
+            full_path = os.path.join(directory, fname)
+            # Derive a human-readable screen name from the filename stem
+            screen_name = Path(fname).stem.replace("_", " ").title()
+            screenshots.append({"path": full_path, "screen_name": screen_name})
+
+        return screenshots

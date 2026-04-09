@@ -13,6 +13,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from agent.health_monitor import HealthMonitor, CRITICAL_STATES
 from tools.screenshot import EvidenceCapture
 from utils.claude_client import ask_with_tools
 from utils.config import get
@@ -198,6 +199,8 @@ class ScenarioRunnerAgent:
         account_id: str,
         feature_description: str,
         run_id: str,
+        package_name: str = "",
+        health_monitor: HealthMonitor | None = None,
     ):
         """
         Args:
@@ -206,12 +209,16 @@ class ScenarioRunnerAgent:
             account_id: ID of the account under test
             feature_description: Short description of the feature being tested
             run_id: Parent run identifier for evidence grouping
+            package_name: Android package name of the app under test (used by HealthMonitor)
+            health_monitor: Optional pre-constructed HealthMonitor; created automatically
+                            if package_name is provided and this is None.
         """
         self.device = device
         self.scenario = scenario
         self.account_id = account_id
         self.feature_description = feature_description
         self.run_id = run_id
+        self.package_name = package_name
 
         # Internal state
         self._done: bool = False
@@ -220,6 +227,14 @@ class ScenarioRunnerAgent:
 
         # Evidence capture
         self.evidence = EvidenceCapture(run_id, account_id, scenario["name"])
+
+        # Health monitor — use provided one, or create if package_name given
+        if health_monitor is not None:
+            self.health_monitor: HealthMonitor | None = health_monitor
+        elif package_name:
+            self.health_monitor = HealthMonitor(device, package_name, run_id)
+        else:
+            self.health_monitor = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -295,13 +310,14 @@ class ScenarioRunnerAgent:
 
     def _run_tool_loop(self) -> None:
         """Run the Claude tool-use loop until the scenario finishes."""
+        scenario_name = self.scenario["name"]
         steps_formatted = "\n".join(
             f"  {i + 1}. {step}" for i, step in enumerate(self.scenario.get("steps", []))
         )
         initial_prompt = (
             f"Feature under test: {self.feature_description}\n"
             f"Account ID: {self.account_id}\n\n"
-            f"Scenario: {self.scenario['name']}\n"
+            f"Scenario: {scenario_name}\n"
             f"Severity: {self.scenario.get('severity', 'medium')}\n\n"
             f"Steps to execute:\n{steps_formatted}\n\n"
             f"Expected outcome:\n{self.scenario.get('expected_outcome', 'Not specified')}\n\n"
@@ -312,9 +328,63 @@ class ScenarioRunnerAgent:
         messages: list[dict] = [{"role": "user", "content": initial_prompt}]
         max_iterations = len(self.scenario.get("steps", [])) * 6 + 20  # reasonable cap
 
+        # Reset health monitor circuit breaker for this scenario
+        if self.health_monitor is not None:
+            self.health_monitor.reset_attempts()
+
         for iteration in range(max_iterations):
             if self._done:
                 break
+
+            # --- Self-healing check before each Claude iteration ---
+            if self.health_monitor is not None:
+                heal_context = f"scenario={scenario_name}, iteration={iteration}"
+                heal_result = self.health_monitor.check_and_heal(context=heal_context)
+
+                if not heal_result.healed:
+                    # For critical failures (e.g. DEVICE_UNRESPONSIVE), abort the loop
+                    if heal_result.gap_type in CRITICAL_STATES:
+                        logger.error(
+                            f"[ScenarioRunner] Critical failure — aborting: "
+                            f"gap_type={heal_result.gap_type} | scenario={scenario_name}"
+                        )
+                        self._done = True
+                        self._result = None  # triggers "blocked" status in run()
+                        # Inject a tool-result-style note so callers see the block reason
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"[HEALTH_MONITOR] CRITICAL: Device unresponsive after "
+                                f"{heal_result.attempts} recovery attempts. "
+                                f"Scenario blocked. gap_type={heal_result.gap_type}"
+                            ),
+                        })
+                        break
+                    else:
+                        # Non-critical but unhealed: log and continue (Claude may handle it)
+                        logger.warning(
+                            f"[ScenarioRunner] Heal failed (non-critical): "
+                            f"gap_type={heal_result.gap_type} attempts={heal_result.attempts}"
+                        )
+
+                elif heal_result.gap_type != "APP_RUNNING":
+                    # A recovery happened successfully — inform Claude via a synthetic message
+                    heal_note = (
+                        f"[HEALTH_MONITOR] Auto-recovery performed: "
+                        f"state={heal_result.gap_type} | "
+                        f"action={heal_result.recovery_action} | "
+                        f"state_after={heal_result.state_after} | "
+                        f"attempts={heal_result.attempts}. "
+                        "The app has been relaunched/restored. "
+                        "Re-orient to the current screen before continuing."
+                    )
+                    # Append as a user message only if there are already assistant messages
+                    # (avoids duplicating info in the very first iteration)
+                    if len(messages) > 1:
+                        messages.append({"role": "user", "content": heal_note})
+                    else:
+                        # Prepend to initial prompt so Claude knows from the start
+                        messages[0]["content"] = heal_note + "\n\n" + messages[0]["content"]
 
             response = ask_with_tools(
                 messages=messages,
