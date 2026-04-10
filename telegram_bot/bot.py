@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import threading
 import time
 import uuid
@@ -215,12 +216,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "*Commands:*\n"
         "/run `<feature>` — start a standard UAT run\n"
         "/run_figma `<figma_url>` — start Figma-first UAT\n"
+        "/builds — list available APK builds\n"
+        "/use\\_build `<number>` — select a build from the list\n"
+        "/upload\\_local `<path>` — load APK from local path\n"
         "/status — show current run status\n"
         "/report — get the latest report\n"
         "/list — list recent runs\n"
         "/cases `<feature>` — list use cases for a feature\n"
         "/help — show this message\n\n"
-        "To upload an APK, simply send a `.apk` file as a document.\n"
+        "To upload an APK (<20MB), send a `.apk` file as a document.\n"
+        "For larger APKs, use /builds or /upload\\_local.\n"
         "After uploading an APK, send a Figma URL to run design compliance UAT."
     )
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
@@ -438,8 +443,341 @@ async def cmd_cases(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 # ---------------------------------------------------------------------------
+# APK build management commands
+# ---------------------------------------------------------------------------
+
+_BUILDS_DIR = _REPO_ROOT / ".tmp" / "builds"
+
+# Cached numbered list from last /builds call, keyed by chat_id
+_builds_cache: dict[int, list[Path]] = {}
+
+
+async def cmd_builds(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/builds — List available APK builds from .tmp/builds/."""
+    if not _BUILDS_DIR.exists():
+        await update.message.reply_text(
+            "No builds directory found. Place APKs in `.tmp/builds/`.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    apks = sorted(_BUILDS_DIR.glob("*.apk"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not apks:
+        await update.message.reply_text("No APK files found in `.tmp/builds/`.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    chat_id = update.effective_chat.id
+    _builds_cache[chat_id] = apks
+
+    lines = ["*Available APK Builds:*\n"]
+    for i, apk in enumerate(apks, 1):
+        size_mb = apk.stat().st_size / (1024 * 1024)
+        lines.append(f"`{i}.` {apk.name} ({size_mb:.0f} MB)")
+
+    lines.append(f"\nUse /use\\_build `<number>` to select one.")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_use_build(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/use_build <number> — Select an APK from the /builds list."""
+    chat_id = update.effective_chat.id
+
+    if not context.args:
+        await update.message.reply_text("Usage: /use_build `<number>`\nRun /builds first to see the list.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    try:
+        idx = int(context.args[0]) - 1
+    except ValueError:
+        await update.message.reply_text("Please provide a valid number.")
+        return
+
+    cached = _builds_cache.get(chat_id, [])
+    if not cached:
+        await update.message.reply_text("Run /builds first to list available APKs.")
+        return
+
+    if idx < 0 or idx >= len(cached):
+        await update.message.reply_text(f"Invalid selection. Choose 1–{len(cached)}.")
+        return
+
+    selected = cached[idx]
+    _APKS_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(selected), str(_CANDIDATE_APK))
+    size_mb = selected.stat().st_size / (1024 * 1024)
+
+    await update.message.reply_text(
+        f"Selected: `{selected.name}` ({size_mb:.0f} MB)\n"
+        f"Copied to `candidate.apk`. Use /run to start UAT.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cmd_upload_local(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/upload_local <path> — Load an APK from a local filesystem path."""
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /upload\\_local `<path>`\n"
+            "Example: /upload\\_local /path/to/app.apk",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    path = Path(" ".join(context.args).strip())
+    if not path.exists():
+        await update.message.reply_text(f"File not found: `{path}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if not str(path).lower().endswith(".apk"):
+        await update.message.reply_text("Only `.apk` files are accepted.", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    _APKS_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(path), str(_CANDIDATE_APK))
+    size_mb = path.stat().st_size / (1024 * 1024)
+
+    await update.message.reply_text(
+        f"APK loaded from local path ({size_mb:.0f} MB).\n"
+        f"Saved as `candidate.apk`. Use /run to start UAT.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+# ---------------------------------------------------------------------------
 # APK upload handler
 # ---------------------------------------------------------------------------
+
+_TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
+# ---------------------------------------------------------------------------
+# AppUAT photo upload — forward Telegram photos to webapp screen-mapping API
+# ---------------------------------------------------------------------------
+
+import httpx
+
+_APPUAT_API = os.getenv("APPUAT_API_URL", "http://localhost:8000")
+_APPUAT_STATE_FILE = _REPO_ROOT / "webapp" / "data" / "telegram_state.json"
+
+
+def _load_telegram_state() -> dict:
+    if _APPUAT_STATE_FILE.exists():
+        try:
+            return json.loads(_APPUAT_STATE_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_telegram_state(state: dict) -> None:
+    _APPUAT_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _APPUAT_STATE_FILE.write_text(json.dumps(state, indent=2))
+
+
+def _get_active_project(chat_id: int) -> int | None:
+    state = _load_telegram_state()
+    return state.get(str(chat_id), {}).get("active_project_id")
+
+
+def _set_active_project(chat_id: int, project_id: int) -> None:
+    state = _load_telegram_state()
+    state.setdefault(str(chat_id), {})["active_project_id"] = project_id
+    _save_telegram_state(state)
+
+
+async def cmd_appuat_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List AppUAT projects from the webapp."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"{_APPUAT_API}/api/projects")
+            r.raise_for_status()
+            projects = r.json()
+    except Exception as exc:
+        await update.message.reply_text(
+            f"Couldn't reach AppUAT API at {_APPUAT_API}: {exc}\n\n"
+            f"Make sure the backend is running."
+        )
+        return
+
+    if not projects:
+        await update.message.reply_text(
+            "No projects yet. Create one at http://localhost:3000"
+        )
+        return
+
+    active = _get_active_project(update.effective_chat.id)
+    lines = ["*Your AppUAT projects:*", ""]
+    for p in projects:
+        marker = " ← active" if p["id"] == active else ""
+        lines.append(f"`{p['id']}` *{p['name']}*{marker}")
+        if p.get("app_package"):
+            lines.append(f"   `{p['app_package']}`")
+    lines.append("")
+    lines.append("Use `/setproject <id>` to choose where photos go.")
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def cmd_appuat_setproject(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Set the active project for photo uploads in this chat."""
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/setproject <project_id>`\n\nUse /projects to list IDs.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+    try:
+        pid = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Project id must be a number.")
+        return
+
+    # Verify it exists
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get(f"{_APPUAT_API}/api/projects/{pid}")
+            if r.status_code == 404:
+                await update.message.reply_text(f"Project {pid} not found.")
+                return
+            r.raise_for_status()
+            project = r.json()
+    except Exception as exc:
+        await update.message.reply_text(f"Couldn't reach AppUAT API: {exc}")
+        return
+
+    _set_active_project(update.effective_chat.id, pid)
+    await update.message.reply_text(
+        f"✓ Active project set to *{project['name']}* (id `{pid}`).\n\n"
+        f"Now send me screenshots — I'll auto-upload them and Claude will analyze each one.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def cmd_appuat_uat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generate a draft test plan for the active project from a feature description.
+
+    Usage: /uat <feature description>
+    Example: /uat hotel details page launched with photos, amenities, price, and Book Now button
+    """
+    chat_id = update.effective_chat.id
+    project_id = _get_active_project(chat_id)
+    if project_id is None:
+        await update.message.reply_text(
+            "No active project. Use /projects to list and /setproject `<id>`.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: `/uat <feature description>`\n\n"
+            "Example:\n"
+            "`/uat hotel details page launched with photos, amenities, price, and Book Now button`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    feature_description = " ".join(context.args)
+    await update.message.reply_text(
+        f"Generating UAT plan for:\n_{feature_description}_\n\nThinking…",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            r = await client.post(
+                f"{_APPUAT_API}/api/projects/{project_id}/plans",
+                json={"feature_description": feature_description},
+            )
+            if r.status_code == 400:
+                await update.message.reply_text(
+                    "Couldn't generate plan: no screens uploaded for this project yet.\n"
+                    "Send some screenshots first!"
+                )
+                return
+            r.raise_for_status()
+            plan = r.json()
+    except Exception as exc:
+        await update.message.reply_text(f"Plan generation failed: {exc}")
+        return
+
+    cases = plan.get("cases", [])
+    if not cases:
+        await update.message.reply_text(
+            "Plan generated but no cases were produced. The screen graph may be too sparse — upload more screens and try again."
+        )
+        return
+
+    # Group cases by branch_label for readability
+    by_branch: dict[str, list[dict]] = {}
+    for c in cases:
+        by_branch.setdefault(c.get("branch_label") or "default", []).append(c)
+
+    lines = [
+        f"*Test plan #{plan['id']}* — {len(cases)} case{'s' if len(cases) != 1 else ''}",
+        "",
+    ]
+    for branch, branch_cases in by_branch.items():
+        lines.append(f"_{branch}_")
+        for c in branch_cases:
+            lines.append(f"  • {c['title']}")
+        lines.append("")
+    lines.append(f"Review & approve at:")
+    lines.append(f"http://localhost:3000/projects/{project_id}/plans/{plan['id']}")
+
+    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Receive a photo from Telegram and upload it to the active AppUAT project."""
+    if not update.message or not update.message.photo:
+        return
+
+    chat_id = update.effective_chat.id
+    project_id = _get_active_project(chat_id)
+    if project_id is None:
+        await update.message.reply_text(
+            "No active project set. Use /projects to list and /setproject `<id>` to choose one.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Telegram photos arrive as multiple sizes; pick the largest
+    photo = update.message.photo[-1]
+    try:
+        tg_file = await context.bot.get_file(photo.file_id)
+        photo_bytes_io = io.BytesIO()
+        await tg_file.download_to_memory(photo_bytes_io)
+        photo_bytes = photo_bytes_io.getvalue()
+    except Exception as exc:
+        await update.message.reply_text(f"Failed to download photo: {exc}")
+        return
+
+    filename = f"telegram_{photo.file_unique_id}.jpg"
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post(
+                f"{_APPUAT_API}/api/projects/{project_id}/screens/bulk",
+                files={"files": (filename, photo_bytes, "image/jpeg")},
+            )
+            r.raise_for_status()
+            screens = r.json()
+    except Exception as exc:
+        await update.message.reply_text(f"Upload failed: {exc}")
+        return
+
+    if not screens:
+        await update.message.reply_text("Upload succeeded but no screens returned.")
+        return
+
+    s = screens[0]
+    elements_count = len(s.get("elements") or [])
+    await update.message.reply_text(
+        f"✓ *{s.get('display_name') or s['name']}*\n"
+        f"_{(s.get('purpose') or '')[:120]}_\n"
+        f"`{elements_count}` interactive element{'s' if elements_count != 1 else ''} detected\n\n"
+        f"Open: http://localhost:3000/projects/{project_id}",
+        parse_mode=ParseMode.MARKDOWN,
+    )
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -452,6 +790,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not filename.lower().endswith(".apk"):
         await update.message.reply_text(
             "Only `.apk` files are accepted. Please send a valid APK.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Check file size before attempting download
+    if doc.file_size and doc.file_size > _TELEGRAM_DOWNLOAD_LIMIT_BYTES:
+        size_mb = doc.file_size / (1024 * 1024)
+        await update.message.reply_text(
+            f"APK is too large for Telegram download ({size_mb:.0f} MB).\n"
+            f"Telegram limits bot file downloads to 20 MB.\n\n"
+            f"*Alternatives:*\n"
+            f"• /builds — list APKs from local builds directory\n"
+            f"• /upload\\_local `<path>` — load from a local path\n\n"
+            f"Place your APK in `.tmp/builds/` and use /builds.",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -693,10 +1045,19 @@ def main() -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("run", cmd_run))
     app.add_handler(CommandHandler("run_figma", cmd_run_figma))
+    app.add_handler(CommandHandler("builds", cmd_builds))
+    app.add_handler(CommandHandler("use_build", cmd_use_build))
+    app.add_handler(CommandHandler("upload_local", cmd_upload_local))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("cases", cmd_cases))
+    # AppUAT screen mapping commands
+    app.add_handler(CommandHandler("projects", cmd_appuat_projects))
+    app.add_handler(CommandHandler("setproject", cmd_appuat_setproject))
+    app.add_handler(CommandHandler("uat", cmd_appuat_uat))
+    # Photo handler — uploads to active AppUAT project
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     # Must be registered AFTER document handler so APK uploads are handled first
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))

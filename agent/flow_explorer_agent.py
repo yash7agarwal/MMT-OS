@@ -163,11 +163,13 @@ class FlowExplorerAgent:
         feature_description: str,
         entry_package: str,
         max_depth: int = 20,
+        navigation_steps: list[str] | None = None,
     ):
         self.device = device
         self.feature_description = feature_description
         self.entry_package = entry_package
         self.max_depth = max_depth
+        self.navigation_steps = navigation_steps  # LOB-specific pre-navigation
 
         # Internal state
         self.visited_hashes: set[str] = set()
@@ -206,14 +208,29 @@ class FlowExplorerAgent:
             f"(max_depth={self.max_depth})"
         )
 
-        initial_prompt = (
-            f"Feature to explore: {self.feature_description}\n"
-            f"App package: {self.entry_package}\n"
-            f"Maximum exploration depth: {self.max_depth}\n\n"
-            "Begin by taking a screenshot to see the current state of the app, "
-            "then systematically explore the feature area. "
-            "Call finish_exploration when you are done."
-        )
+        if self.navigation_steps:
+            nav_block = "\n".join(
+                f"  {i+1}. {step}" for i, step in enumerate(self.navigation_steps)
+            )
+            initial_prompt = (
+                f"Feature to explore: {self.feature_description}\n"
+                f"App package: {self.entry_package}\n"
+                f"Maximum exploration depth: {self.max_depth}\n\n"
+                "IMPORTANT — Follow these navigation steps in order to reach the target screen "
+                "BEFORE doing any open exploration:\n"
+                f"{nav_block}\n\n"
+                "Once you have reached the target screen, explore it thoroughly and call "
+                "finish_exploration when you are done."
+            )
+        else:
+            initial_prompt = (
+                f"Feature to explore: {self.feature_description}\n"
+                f"App package: {self.entry_package}\n"
+                f"Maximum exploration depth: {self.max_depth}\n\n"
+                "Begin by taking a screenshot to see the current state of the app, "
+                "then systematically explore the feature area. "
+                "Call finish_exploration when you are done."
+            )
 
         messages: list[dict] = [{"role": "user", "content": initial_prompt}]
 

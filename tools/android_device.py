@@ -57,15 +57,24 @@ class AndroidDevice:
         time.sleep(get("uat.default_wait_ms", 1500) / 1000)
 
     def tap_text(self, text: str, exact: bool = False) -> bool:
-        """Tap the first element containing text. Returns True if found."""
+        """Tap the first element containing text. Returns True if found.
+
+        Uses physical touch coordinates (d.click(x, y)) instead of accessibility
+        ACTION_CLICK to ensure navigation works on elements where accessibility
+        click does not trigger the intent (e.g. MMT LOB tiles).
+        """
         try:
-            if exact:
-                self.d(text=text).click()
-            else:
-                self.d(textContains=text).click()
+            el = self.d(text=text) if exact else self.d(textContains=text)
+            if not el.exists(timeout=2):
+                return False
+            info = el[0].info
+            bounds = info["bounds"]
+            cx = (bounds["left"] + bounds["right"]) // 2
+            cy = (bounds["top"] + bounds["bottom"]) // 2
+            self.d.click(cx, cy)
             time.sleep(get("uat.default_wait_ms", 1500) / 1000)
             return True
-        except u2.exceptions.UiObjectNotFoundError:
+        except (u2.exceptions.UiObjectNotFoundError, Exception):
             return False
 
     def tap_resource_id(self, resource_id: str) -> bool:

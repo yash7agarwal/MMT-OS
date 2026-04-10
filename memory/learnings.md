@@ -67,3 +67,13 @@ Running `python telegram_bot/run_bot.py` adds `telegram_bot/` to sys.path. Runni
 
 ### L8: Orchestrator signature must be passed correctly to background threads
 The Telegram bot's background UAT thread must use the exact Orchestrator.__init__ signature: `candidate_apk`, `feature_description`, `accounts` (as a list, not a file path). Loading accounts.json must happen before instantiating the Orchestrator.
+
+---
+
+## Validation and Self-Healing Learnings
+
+### L9: "Done" must mean validated, not just written
+The system confirmed skill creation, bot deployment, and Orchestrator integration as "done" without running any validation. All three had bugs caught only at runtime. Every completion must run the post-task-eval checklist. Written code is an untested hypothesis — validation is what makes it done.
+
+### L10: Issue patterns must be logged at discovery, not just mentally noted
+When a bug is found and fixed, the fix is applied and the session moves on. But if the same pattern recurs (wrong invocation style, wrong API signature), it won't be caught faster next time. Log every issue at discovery so future sessions can consult `memory/issues_log.jsonl` before debugging from scratch. The log is the institutional memory — without it, every recurrence is a first encounter.

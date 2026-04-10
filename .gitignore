@@ -3,8 +3,17 @@
 __pycache__/
 *.pyc
 .tmp/
+accounts.json
+reports/figma_diffs/
 reports/*.md
 reports/*.json
 reports/*.pdf
 *.apk
 *.aab
+
+# webapp
+webapp/data/
+webapp/web/node_modules/
+webapp/web/.next/
+webapp/web/out/
+webapp/web/next-env.d.ts

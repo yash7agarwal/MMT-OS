@@ -4,6 +4,56 @@ Reusable approaches, delegation rules, and recurring solutions.
 
 ---
 
+## Implementation Quality Patterns
+
+### P9: Post-Implementation Validation Gate
+
+**Trigger**: After writing any code, skill, Dockerfile, or deployment.
+
+**Bad pattern**:
+```
+Write code → say "done" → find bug at runtime
+```
+
+**Correct pattern**:
+```
+Write code → run post-task-eval → validate imports/structure/deployment → say "done"
+```
+
+Type-specific checks:
+- skill_creation: `ls ~/.claude/skills/<name>/SKILL.md` + frontmatter
+- python_module: `python -c "import <module>"` + signature check at call sites
+- dockerfile: CMD invocation style + COPY source existence + image size estimate
+- deployment: status = SUCCESS + logs show healthy startup
+- api_integration: health-check call with real credentials
+- git_operation: `git log` shows commit + `git status` clean
+
+**Rule**: Written ≠ Done. Done = Validated. Never confirm completion without passing the gate.
+
+---
+
+### P10: Issue Log Consultation Before Fixing
+
+**Trigger**: Something breaks or a fix is needed.
+
+**Bad pattern**:
+```
+Something breaks → debug from scratch → fix → move on
+```
+
+**Correct pattern**:
+```
+Something breaks →
+grep "<symptom>" /Users/yash/ClaudeWorkspace/MMT-OS/memory/issues_log.jsonl →
+apply known fix if found → verify → log result
+```
+
+If no match: diagnose, fix, log the new issue so next occurrence is instant.
+
+**Savings**: Eliminates repeated debugging of known issue patterns across sessions.
+
+---
+
 ## Context Bandwidth Patterns
 
 ### P1: Codebase-First Delegation (before any implementation task)

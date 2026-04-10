@@ -1,7 +1,7 @@
 # MMT-OS Settings
 
 device:
-  serial: ""           # ADB device serial (empty = use first connected)
+  serial: "ZD222BWGXC"  # Moto G32
   emulator_avd: "mmt_test"
   screenshot_dir: ".tmp/screenshots"
   recording_dir: ".tmp/recordings"

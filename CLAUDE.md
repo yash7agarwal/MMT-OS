@@ -518,6 +518,38 @@ When delegating, structure the prompt with:
 
 ---
 
+## Definition of Done
+
+A task is ONLY complete when it passes all applicable validation checks.
+"Written" ≠ "Done". "Deployed" ≠ "Done". "Done" = "Validated".
+
+### Mandatory Post-Implementation Checks
+
+| Task type | Required checks before marking done |
+|-----------|-------------------------------------|
+| New skill | `ls ~/.claude/skills/<name>/SKILL.md` exists + frontmatter valid |
+| New Python file | `python -c "import <module>"` passes + key classes importable |
+| Dockerfile change | CMD uses correct invocation + referenced files exist + size estimate reasonable |
+| Deployment | Status = SUCCESS + logs show healthy startup |
+| API integration | Health check call succeeds with valid credentials |
+| Git push | `git log` shows commit + `git status` clean |
+
+### Self-Healing Protocol
+
+When a validation check fails:
+1. Check `memory/issues_log.jsonl` for a matching known issue
+2. If found: apply the documented fix automatically
+3. If not found: diagnose, fix, and log the new issue
+4. Re-run the validation check
+5. Only mark done after validation passes
+
+### Issue Logging
+
+Every bug, failure, or wrong assumption MUST be logged to `memory/issues_log.jsonl` immediately when discovered — not after fixing, but at discovery. Format:
+- id, timestamp, category, description, root_cause, fix_applied, prevention, detected_at, should_have_been_caught_at
+
+---
+
 ## Operating Rules
 
 - Do not reinvent known solutions without reason

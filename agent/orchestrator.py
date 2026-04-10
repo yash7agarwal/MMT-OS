@@ -24,6 +24,30 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+_LOB_CONFIG_PATH = Path(__file__).parent.parent / "config" / "lob_config.json"
+
+
+def _load_lob_config() -> dict:
+    try:
+        return json.loads(_LOB_CONFIG_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _resolve_lob(feature_description: str, lob_config: dict) -> tuple[str | None, dict | None]:
+    """Return (lob_name, lob_entry) for the best-matching LOB, or (None, None)."""
+    feature_lower = feature_description.lower()
+    best_lob = None
+    best_score = 0
+    for lob_name, entry in lob_config.items():
+        score = sum(1 for kw in entry.get("keywords", []) if kw in feature_lower)
+        if score > best_score:
+            best_score = score
+            best_lob = lob_name
+    if best_lob and best_score > 0:
+        return best_lob, lob_config[best_lob]
+    return None, None
+
 from agent.flow_explorer_agent import FlowExplorerAgent
 from agent.health_monitor import HealthMonitor
 from agent.scenario_runner_agent import ScenarioRunnerAgent
@@ -57,7 +81,7 @@ Acceptance criteria:
 Screen graph summary (screens discovered during exploration):
 {screen_summary}
 
-Generate between 10 and 20 test scenarios as a JSON array.
+Generate between 5 and 8 test scenarios as a JSON array.
 Each scenario must follow this exact structure:
 {{
   "name": "<short unique scenario name>",
@@ -68,7 +92,7 @@ Each scenario must follow this exact structure:
 }}
 
 Rules:
-- Include at least 3 happy_path, 3 edge_case, 2 state_variant, 2 regression scenarios
+- Include at least 2 happy_path, 2 edge_case, 1 regression scenario
 - Steps should be concrete and actionable (e.g. "Tap the 'Search Hotels' button")
 - Cover happy path, error states, boundary conditions, and back-navigation
 - Prioritise critical and high severity scenarios first in the list
@@ -166,11 +190,27 @@ class Orchestrator:
                 "but run results may be unreliable."
             )
 
+        # LOB routing — inject targeted navigation steps if feature maps to a known LOB
+        lob_config = _load_lob_config()
+        lob_name, lob_entry = _resolve_lob(self.feature_description, lob_config)
+        if lob_entry:
+            nav_steps = lob_entry.get("navigation_steps")
+            max_depth = lob_entry.get("max_depth", get("agent.flow_explorer_max_depth", 20))
+            logger.info(
+                f"[Orchestrator] LOB routing: '{lob_name}' matched — "
+                f"injecting {len(nav_steps)} navigation steps, max_depth={max_depth}"
+            )
+        else:
+            nav_steps = None
+            max_depth = get("agent.flow_explorer_max_depth", 20)
+            logger.info("[Orchestrator] No LOB match — open-ended exploration")
+
         explorer = FlowExplorerAgent(
             device=device,
             feature_description=self.feature_description,
             entry_package=package_name,
-            max_depth=get("agent.flow_explorer_max_depth", 20),
+            max_depth=max_depth,
+            navigation_steps=nav_steps,
         )
         logger.info("[Orchestrator] Running FlowExplorerAgent...")
         screen_graph = explorer.explore()
@@ -300,7 +340,7 @@ class Orchestrator:
             raw = ask(
                 prompt,
                 system=_SCENARIO_GEN_SYSTEM,
-                max_tokens=4096,
+                max_tokens=8192,
             )
             scenarios = json.loads(raw)
             if not isinstance(scenarios, list):

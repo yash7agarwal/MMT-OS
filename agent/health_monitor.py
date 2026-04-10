@@ -270,7 +270,12 @@ class HealthMonitor:
                 # foreground is suspicious. Extra heuristic: check for a progress
                 # indicator keyword that would mean loading is legit.
                 loading_hints = ["progress", "loading", "spinner", "circular"]
-                if not any(h in ui_lower for h in loading_hints):
+                # Rich content pages (hotel/flight details, search results) are
+                # legitimately static — large UI trees (>3000 chars) are almost
+                # never frozen; they're just content-heavy screens.
+                if len(ui_xml.strip()) > 3000:
+                    pass  # rich content page — not stuck
+                elif not any(h in ui_lower for h in loading_hints):
                     return AppState.NAVIGATION_STUCK
         except Exception:
             pass  # non-fatal; skip stuck check

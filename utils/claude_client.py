@@ -53,6 +53,53 @@ def ask_fast(prompt: str, max_tokens: int = 512) -> str:
     return ask(prompt, max_tokens=max_tokens, model=FAST_MODEL)
 
 
+def ask_vision(
+    prompt: str,
+    image_bytes: bytes,
+    media_type: str = "image/png",
+    max_tokens: int = 512,
+    model: str = FAST_MODEL,
+    system: str = "",
+    retries: int = 3,
+) -> str:
+    """Send an image + text prompt to Claude vision. Returns text response.
+
+    Uses FAST_MODEL (Haiku) by default for speed in navigation loops.
+    Pass model=DEFAULT_MODEL for higher-accuracy verification calls.
+    """
+    import base64
+
+    img_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": img_b64},
+                },
+                {"type": "text", "text": prompt},
+            ],
+        }
+    ]
+    kwargs: dict = {"model": model, "max_tokens": max_tokens, "messages": messages}
+    if system:
+        kwargs["system"] = system
+
+    for attempt in range(retries):
+        try:
+            resp = _get_client().messages.create(**kwargs)
+            return resp.content[0].text
+        except anthropic.RateLimitError:
+            time.sleep(2 ** attempt * 5)
+        except anthropic.APIStatusError as e:
+            if e.status_code >= 500 and attempt < retries - 1:
+                time.sleep(2 ** attempt * 2)
+            else:
+                raise
+    raise RuntimeError(f"Claude vision call failed after {retries} retries")
+
+
 def ask_with_tools(
     messages: list[dict],
     tools: list[dict],

@@ -1,0 +1,76 @@
+{
+  "hotels": {
+    "keywords": ["hotel", "hotels", "hotel detail", "hotel details", "property", "accommodation", "stay", "room"],
+    "app_package": "com.makemytrip",
+    "tab_label": "Hotels",
+    "navigation_steps": [
+      "Take a screenshot to see the current screen.",
+      "Find and tap the 'Hotels' tab in the bottom navigation bar or top LOB selector. If already on Hotels, skip this step.",
+      "In the Hotels search screen, tap the destination field and type 'Delhi', then select 'Delhi, India' from the suggestions.",
+      "Tap the search button or confirm to load hotel listings.",
+      "From the hotel list, tap the first hotel card to open the Hotel Details Page.",
+      "You are now on the Hotel Details Page — this is the target feature. Take a screenshot and begin detailed exploration from here."
+    ],
+    "quick_steps": [
+      {"action": "wait_for_text",  "text": "Hotels",               "timeout": 20},
+      {"action": "wait_ui_idle",   "timeout": 8,                   "interval_ms": 700},
+      {"action": "tap_text",       "text": "Hotels",               "exact": true},
+      {"action": "wait_for_text",  "text": "SEARCH",               "timeout": 20},
+      {"action": "tap_text",       "text": "SEARCH",               "exact": true},
+      {"action": "wait_ms",        "ms": 2000},
+      {"action": "tap_if_present", "text": "Change to Current Date"},
+      {"action": "wait_ms",        "ms": 1000},
+      {"action": "tap_if_present", "text": "SEARCH",               "exact": true},
+      {"action": "wait_for_text",  "text": "Per Night",            "timeout": 15},
+      {"action": "tap_text",       "text": "Per Night"},
+      {"action": "wait_ms",        "ms": 4000}
+    ],
+    "vision_hints": "Find and tap the tile labeled 'Hotels' (it shows a building icon with the word 'Hotels' under it). On the Hotels search page, tap the SEARCH button after defaults are filled. On the listing page, tap the first hotel card visible. Always verify by reading the label under your tap point — never tap by position alone.",
+    "target_screen": "hotel_details_page",
+    "max_depth": 5
+  },
+  "flights": {
+    "keywords": ["flight", "flights", "air ticket", "airfare", "flying"],
+    "tab_label": "Flights",
+    "navigation_steps": [
+      "Take a screenshot to see the current screen.",
+      "Find and tap the 'Flights' tab in the bottom navigation bar or top LOB selector.",
+      "You are now on the Flights search screen — begin exploration from here."
+    ],
+    "target_screen": "flights_search",
+    "max_depth": 10
+  },
+  "trains": {
+    "keywords": ["train", "trains", "rail", "irctc", "railway"],
+    "tab_label": "Trains",
+    "navigation_steps": [
+      "Take a screenshot to see the current screen.",
+      "Find and tap the 'Trains' tab in the bottom navigation bar or top LOB selector.",
+      "You are now on the Trains search screen — begin exploration from here."
+    ],
+    "target_screen": "trains_search",
+    "max_depth": 10
+  },
+  "bus": {
+    "keywords": ["bus", "buses", "coach", "road trip"],
+    "tab_label": "Bus",
+    "navigation_steps": [
+      "Take a screenshot to see the current screen.",
+      "Find and tap the 'Bus' tab in the bottom navigation bar or top LOB selector.",
+      "You are now on the Bus search screen — begin exploration from here."
+    ],
+    "target_screen": "bus_search",
+    "max_depth": 10
+  },
+  "holidays": {
+    "keywords": ["holiday", "holidays", "package", "vacation", "trip package"],
+    "tab_label": "Holidays",
+    "navigation_steps": [
+      "Take a screenshot to see the current screen.",
+      "Find and tap the 'Holidays' tab in the bottom navigation bar or top LOB selector.",
+      "You are now on the Holidays screen — begin exploration from here."
+    ],
+    "target_screen": "holidays_home",
+    "max_depth": 10
+  }
+}

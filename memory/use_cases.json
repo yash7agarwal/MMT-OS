@@ -1,4 +1,113 @@
 {
-  "use_cases": [],
-  "last_updated": null
+  "use_cases": [
+    {
+      "id": "hotel_details_page_baseline_smoke_test",
+      "feature": "hotel details page",
+      "name": "Baseline smoke test",
+      "description": "Feature area is accessible and renders correctly",
+      "category": "happy_path",
+      "severity": "critical",
+      "acceptance_criteria": "Feature area is accessible and renders correctly",
+      "created_at": "2026-04-09T19:08:33.774838+00:00",
+      "last_run": null,
+      "last_result": null
+    },
+    {
+      "id": "hotel_details_page_hotel_details_full_page_load",
+      "feature": "hotel details page",
+      "name": "hotel_details_full_page_load",
+      "description": "The Hotel Details page loads completely within 5 seconds displaying: hotel name, photo gallery with at least one image, star rating, amenities section (Wi-Fi, pool, parking etc.), per-night price in INR, total price summary, and a clearly visible 'Book Now' or equivalent CTA button",
+      "category": "happy_path",
+      "severity": "critical",
+      "acceptance_criteria": "The Hotel Details page loads completely within 5 seconds displaying: hotel name, photo gallery with at least one image, star rating, amenities section (Wi-Fi, pool, parking etc.), per-night price in INR, total price summary, and a clearly visible 'Book Now' or equivalent CTA button",
+      "created_at": "2026-04-09T19:17:15.087883+00:00",
+      "last_run": null,
+      "last_result": null
+    },
+    {
+      "id": "hotel_details_page_booking_cta_navigation",
+      "feature": "hotel details page",
+      "name": "booking_cta_navigation",
+      "description": "Tapping the 'Book Now' CTA successfully navigates the user to the room selection or booking confirmation screen. The price displayed on the details page matches the price carried forward to the next step.",
+      "category": "happy_path",
+      "severity": "critical",
+      "acceptance_criteria": "Tapping the 'Book Now' CTA successfully navigates the user to the room selection or booking confirmation screen. The price displayed on the details page matches the price carried forward to the next step.",
+      "created_at": "2026-04-09T19:17:15.088909+00:00",
+      "last_run": null,
+      "last_result": null
+    },
+    {
+      "id": "hotel_details_page_photo_gallery_scroll_and_expand",
+      "feature": "hotel details page",
+      "name": "photo_gallery_scroll_and_expand",
+      "description": "Photos load correctly in the carousel with smooth swiping. Full-screen mode opens without a crash, displays photo count (e.g. 3/12), and back navigation returns the user to the Hotel Details page with all sections still intact.",
+      "category": "happy_path",
+      "severity": "high",
+      "acceptance_criteria": "Photos load correctly in the carousel with smooth swiping. Full-screen mode opens without a crash, displays photo count (e.g. 3/12), and back navigation returns the user to the Hotel Details page with all sections still intact.",
+      "created_at": "2026-04-09T19:17:15.089123+00:00",
+      "last_run": null,
+      "last_result": null
+    },
+    {
+      "id": "hotel_details_page_hotel_details_load_on_slow_network",
+      "feature": "hotel details page",
+      "name": "hotel_details_load_on_slow_network",
+      "description": "The Hotel Details page shows a loading spinner or skeleton placeholders while content is fetching. Once loaded, all sections (photos, amenities, price, CTA) are visible. If the request times out, a user-friendly error message with a 'Retry' option is displayed instead of a crash or blank screen.",
+      "category": "edge_case",
+      "severity": "high",
+      "acceptance_criteria": "The Hotel Details page shows a loading spinner or skeleton placeholders while content is fetching. Once loaded, all sections (photos, amenities, price, CTA) are visible. If the request times out, a user-friendly error message with a 'Retry' option is displayed instead of a crash or blank screen.",
+      "created_at": "2026-04-09T19:17:15.089296+00:00",
+      "last_run": null,
+      "last_result": null
+    },
+    {
+      "id": "hotel_details_page_hotel_details_no_internet_connection",
+      "feature": "hotel details page",
+      "name": "hotel_details_no_internet_connection",
+      "description": "The app displays a clear 'No Internet Connection' error message with a Retry button. If a cached Hotel Details page is shown, a stale-data warning is displayed. The app does not crash or show a blank page.",
+      "category": "edge_case",
+      "severity": "high",
+      "acceptance_criteria": "The app displays a clear 'No Internet Connection' error message with a Retry button. If a cached Hotel Details page is shown, a stale-data warning is displayed. The app does not crash or show a blank page.",
+      "created_at": "2026-04-09T19:17:15.089516+00:00",
+      "last_run": null,
+      "last_result": null
+    },
+    {
+      "id": "hotel_details_page_amenities_section_completeness",
+      "feature": "hotel details page",
+      "name": "amenities_section_completeness",
+      "description": "The Amenities section is visible even when the hotel has very few or no amenities. If no amenities are listed, a placeholder such as 'No amenities listed' is shown rather than a blank or broken section. Expanding 'View All' shows all available amenities without layout breakage.",
+      "category": "edge_case",
+      "severity": "medium",
+      "acceptance_criteria": "The Amenities section is visible even when the hotel has very few or no amenities. If no amenities are listed, a placeholder such as 'No amenities listed' is shown rather than a blank or broken section. Expanding 'View All' shows all available amenities without layout breakage.",
+      "created_at": "2026-04-09T19:17:15.089860+00:00",
+      "last_run": null,
+      "last_result": null
+    },
+    {
+      "id": "hotel_details_page_back_navigation_from_hotel_details",
+      "feature": "hotel details page",
+      "name": "back_navigation_from_hotel_details",
+      "description": "Pressing back from the Hotel Details page returns the user to the search results list at the same scroll position without data loss or reload. The search filters and results are preserved. Opening a second hotel's details page works correctly without displaying stale data from the previous hotel.",
+      "category": "regression",
+      "severity": "high",
+      "acceptance_criteria": "Pressing back from the Hotel Details page returns the user to the search results list at the same scroll position without data loss or reload. The search filters and results are preserved. Opening a second hotel's details page works correctly without displaying stale data from the previous hotel.",
+      "created_at": "2026-04-09T19:17:15.090124+00:00",
+      "last_run": null,
+      "last_result": null
+    },
+    {
+      "id": "hotel_details_page_price_consistency_inr_display",
+      "feature": "hotel details page",
+      "name": "price_consistency_inr_display",
+      "description": "The per-night price in INR shown on the Hotel Details page matches the price displayed on the hotel listing card (\u00b10 discrepancy for same date/room type). The price breakdown clearly shows base price, taxes, and total. The currency symbol '\u20b9' is correctly rendered throughout the page with no placeholder or encoding issues.",
+      "category": "state_variant",
+      "severity": "medium",
+      "acceptance_criteria": "The per-night price in INR shown on the Hotel Details page matches the price displayed on the hotel listing card (\u00b10 discrepancy for same date/room type). The price breakdown clearly shows base price, taxes, and total. The currency symbol '\u20b9' is correctly rendered throughout the page with no placeholder or encoding issues.",
+      "created_at": "2026-04-09T19:17:15.090466+00:00",
+      "last_run": null,
+      "last_result": null
+    }
+  ],
+  "last_updated": "2026-04-09T19:17:15.090468+00:00"
 }
