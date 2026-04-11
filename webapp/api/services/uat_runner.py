@@ -182,22 +182,59 @@ def run_uat(
             run.package_name = package_name
             db.commit()
 
-        # ── Step 3: Parse Figma file (cached — avoids hammering Figma API) ─
-        logger.info(f"[UatRunner#{run_id}] Loading Figma file {figma_file_id}...")
-        journey = _cached_figma_parse(figma_file_id, figma_token)
-        all_frames = journey.get("all_screens", [])
-        substantive = _filter_substantive_frames(all_frames)
-        # Further filter: must have an image URL
-        substantive = [f for f in substantive if f.get("image_url")]
+        # ── Step 3: Load Figma data from local import (ZERO Figma API calls) ─
         logger.info(
-            f"[UatRunner#{run_id}] Figma frames: {len(all_frames)} total, "
-            f"{len(substantive)} substantive"
+            f"[UatRunner#{run_id}] Looking up local Figma import for {figma_file_id}"
+        )
+        figma_import = (
+            db.query(models.FigmaImport)
+            .filter(
+                models.FigmaImport.project_id == project_id,
+                models.FigmaImport.figma_file_id == figma_file_id,
+                models.FigmaImport.status == "ready",
+            )
+            .order_by(models.FigmaImport.completed_at.desc())
+            .first()
+        )
+        if not figma_import:
+            raise RuntimeError(
+                f"No ready Figma import found for file_id={figma_file_id} in this project. "
+                f"Import the Figma file once via POST /api/projects/{project_id}/figma/imports "
+                f"— after that, every UAT run sources data locally without hitting Figma."
+            )
+        logger.info(
+            f"[UatRunner#{run_id}] Using FigmaImport #{figma_import.id} "
+            f"('{figma_import.file_name}', {figma_import.total_frames} frames)"
+        )
+
+        # Filter to substantive frames with a local image on disk
+        all_frame_rows = (
+            db.query(models.FigmaFrame)
+            .filter(models.FigmaFrame.import_id == figma_import.id)
+            .all()
+        )
+        substantive = [
+            f for f in all_frame_rows
+            if f.image_path and os.path.exists(f.image_path) and f.frame_type == "main_screen"
+        ]
+        # Fallback: if no main_screen frames, accept any frame with an image
+        if not substantive:
+            substantive = [
+                f for f in all_frame_rows
+                if f.image_path and os.path.exists(f.image_path)
+            ]
+        logger.info(
+            f"[UatRunner#{run_id}] {len(all_frame_rows)} imported frames, "
+            f"{len(substantive)} substantive with local images"
         )
         run.total_frames = len(substantive)
         db.commit()
 
         if not substantive:
-            raise RuntimeError("No substantive Figma frames with image URLs found")
+            raise RuntimeError(
+                "No frames with local images in this Figma import. "
+                "Re-run the import to fetch missing images."
+            )
 
         # ── Step 4: Launch app fresh ───────────────────────────────────────
         if package_name:
@@ -216,10 +253,9 @@ def run_uat(
         navigator = VisionNavigator(device, package_name=package_name)
 
         for i, frame in enumerate(substantive, start=1):
-            frame_name = frame.get("name", f"frame_{i}")
-            node_id = frame.get("node_id", "")
-            image_url = frame.get("image_url", "")
-            purpose = frame.get("screen_purpose") or frame.get("type") or ""
+            frame_name = frame.name
+            node_id = frame.node_id
+            purpose = frame.frame_type or ""
 
             logger.info(
                 f"[UatRunner#{run_id}] Frame {i}/{len(substantive)}: {frame_name}"
@@ -229,6 +265,7 @@ def run_uat(
                 run_id=run_id,
                 figma_frame_name=frame_name,
                 figma_node_id=node_id,
+                figma_image_path=frame.image_path,  # already on disk from the import
                 verdict="ERROR",
                 issues=[],
             )
@@ -237,24 +274,8 @@ def run_uat(
 
             t_start = time.time()
             try:
-                # Cache the Figma image keyed by node_id across runs — same node,
-                # same image, no need to re-download from Figma's CDN
-                cache_key = f"{figma_file_id}_{node_id.replace(':', '_')}.png"
-                figma_cached = _FIGMA_CACHE_DIR / cache_key
-                figma_local = run_dir / f"figma_{node_id.replace(':', '_')}.png"
-                if figma_cached.exists() and figma_cached.stat().st_size > 0:
-                    figma_local.write_bytes(figma_cached.read_bytes())
-                    frame_result.figma_image_path = str(figma_local)
-                    logger.debug(f"[UatRunner#{run_id}] Using cached Figma image for {node_id}")
-                else:
-                    try:
-                        r = httpx.get(image_url, timeout=30)
-                        r.raise_for_status()
-                        figma_cached.write_bytes(r.content)
-                        figma_local.write_bytes(r.content)
-                        frame_result.figma_image_path = str(figma_local)
-                    except Exception as exc:
-                        logger.warning(f"[UatRunner#{run_id}] Figma image download failed: {exc}")
+                # Figma image is already on disk thanks to the import — no download needed
+                pass
 
                 # Autonomous navigation to the target screen
                 hints = f"Screen purpose: {purpose}. Feature: {feature_description or ''}"

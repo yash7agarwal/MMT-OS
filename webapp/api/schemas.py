@@ -214,3 +214,46 @@ class UatRunSummary(BaseModel):
     overall_match_score: float | None
     started_at: datetime
     completed_at: datetime | None
+
+
+# ---------- Figma import ----------
+
+class FigmaImportCreate(BaseModel):
+    figma_file_id: str
+
+
+class FigmaFrameOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    import_id: int
+    node_id: str
+    name: str
+    page_name: str | None
+    frame_type: str
+    image_path: str | None
+    width: float | None
+    height: float | None
+    x: float | None
+    y: float | None
+    text_content: list[Any] | None
+    colors: list[Any] | None
+    fonts: list[Any] | None
+
+
+class FigmaImportSummary(BaseModel):
+    """Lightweight list view — omits the frames list."""
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    figma_file_id: str
+    file_name: str | None
+    status: str
+    total_frames: int
+    error: str | None
+    imported_at: datetime
+    completed_at: datetime | None
+
+
+class FigmaImportOut(FigmaImportSummary):
+    """Full detail — includes all frames."""
+    frames: list[FigmaFrameOut] = []

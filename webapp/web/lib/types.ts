@@ -152,3 +152,40 @@ export interface UatRunSummary {
   started_at: string
   completed_at: string | null
 }
+
+// ---------- Figma imports ----------
+
+export type FigmaImportStatus = 'fetching' | 'ready' | 'failed'
+
+export interface FigmaFrame {
+  id: number
+  import_id: number
+  node_id: string
+  name: string
+  page_name: string | null
+  frame_type: string
+  image_path: string | null
+  width: number | null
+  height: number | null
+  x: number | null
+  y: number | null
+  text_content: any[] | null
+  colors: string[] | null
+  fonts: { family: string; size: number; weight: number }[] | null
+}
+
+export interface FigmaImportSummary {
+  id: number
+  project_id: number
+  figma_file_id: string
+  file_name: string | null
+  status: FigmaImportStatus
+  total_frames: number
+  error: string | null
+  imported_at: string
+  completed_at: string | null
+}
+
+export interface FigmaImport extends FigmaImportSummary {
+  frames: FigmaFrame[]
+}

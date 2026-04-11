@@ -3,7 +3,14 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { api } from '@/lib/api'
-import type { Edge, ProjectDetail, Screen, TestPlan, UatRunSummary } from '@/lib/types'
+import type {
+  Edge,
+  FigmaImportSummary,
+  ProjectDetail,
+  Screen,
+  TestPlan,
+  UatRunSummary,
+} from '@/lib/types'
 import { ScreenUploader } from '@/components/ScreenUploader'
 import { ScreenCard } from '@/components/ScreenCard'
 import { FlowInferencePanel } from '@/components/FlowInferencePanel'
@@ -16,6 +23,9 @@ export default function ProjectDetailPage({ params }: { params: { id: string } }
   const [edges, setEdges] = useState<Edge[]>([])
   const [plans, setPlans] = useState<TestPlan[]>([])
   const [runs, setRuns] = useState<UatRunSummary[]>([])
+  const [figmaImports, setFigmaImports] = useState<FigmaImportSummary[]>([])
+  const [figmaFileIdInput, setFigmaFileIdInput] = useState('rid4WC0zcs0yt3RjpST0dx')
+  const [importing, setImporting] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [planFeature, setPlanFeature] = useState('')
@@ -24,22 +34,40 @@ export default function ProjectDetailPage({ params }: { params: { id: string } }
 
   const refresh = async () => {
     try {
-      const [p, s, e, pls, rs] = await Promise.all([
+      const [p, s, e, pls, rs, fi] = await Promise.all([
         api.getProject(projectId),
         api.listScreens(projectId),
         api.listEdges(projectId),
         api.listPlans(projectId),
         api.listUatRuns(projectId),
+        api.listFigmaImports(projectId),
       ])
       setProject(p)
       setScreens(s)
       setEdges(e)
       setPlans(pls)
       setRuns(rs)
+      setFigmaImports(fi)
     } catch (err: any) {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const triggerFigmaImport = async () => {
+    if (!figmaFileIdInput.trim()) return
+    setImporting(true)
+    try {
+      const imp = await api.createFigmaImport(projectId, figmaFileIdInput.trim())
+      setFigmaImports((prev) => [imp, ...prev])
+      if (imp.status === 'failed') {
+        alert(`Import failed: ${(imp.error || '').slice(0, 300)}`)
+      }
+    } catch (err: any) {
+      alert(`Import failed: ${err.message}`)
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -132,6 +160,108 @@ export default function ProjectDetailPage({ params }: { params: { id: string } }
           </div>
         </div>
       </div>
+
+      {/* ──────────── FIGMA IMPORTS (source of truth) ──────────── */}
+      <section className="mb-6 border border-purple-900 bg-purple-950/20 rounded-lg p-5">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <h2 className="text-lg font-bold">🎨 Figma Imports</h2>
+            <p className="text-sm text-zinc-400 mt-1">
+              One fetch = all UAT runs free. Designs stored locally, no Figma API
+              calls on every run.
+            </p>
+          </div>
+          {figmaImports.filter((i) => i.status === 'ready').length > 0 && (
+            <span className="text-xs text-emerald-400">
+              ✓ {figmaImports.filter((i) => i.status === 'ready').length} ready
+            </span>
+          )}
+        </div>
+
+        {figmaImports.length === 0 ? (
+          <div className="bg-zinc-950/60 rounded p-3">
+            <p className="text-xs text-zinc-500 mb-2">
+              No imports yet. Paste a Figma file ID and click Import.
+            </p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={figmaFileIdInput}
+                onChange={(e) => setFigmaFileIdInput(e.target.value)}
+                placeholder="e.g. rid4WC0zcs0yt3RjpST0dx"
+                disabled={importing}
+                className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-purple-500"
+              />
+              <button
+                onClick={triggerFigmaImport}
+                disabled={importing || !figmaFileIdInput.trim()}
+                className="bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white px-4 py-2 rounded text-sm font-semibold"
+              >
+                {importing ? 'Importing…' : 'Import'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {figmaImports.slice(0, 4).map((imp) => {
+              const statusColor =
+                imp.status === 'ready'
+                  ? 'bg-emerald-950 text-emerald-300 border-emerald-900'
+                  : imp.status === 'fetching'
+                  ? 'bg-blue-950 text-blue-300 border-blue-900'
+                  : 'bg-red-950 text-red-300 border-red-900'
+              return (
+                <div
+                  key={imp.id}
+                  className="border border-zinc-800 bg-zinc-950/60 rounded p-3 flex items-center justify-between gap-3"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-medium text-sm">
+                        {imp.file_name || 'Untitled file'}
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded border ${statusColor}`}>
+                        {imp.status}
+                      </span>
+                      <span className="text-xs text-zinc-500">
+                        {imp.total_frames} frames
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-600 font-mono truncate mt-0.5">
+                      {imp.figma_file_id}
+                    </p>
+                    {imp.status === 'failed' && imp.error && (
+                      <p className="text-xs text-red-300 mt-1 truncate">
+                        {imp.error.split('\n')[0].slice(0, 140)}
+                      </p>
+                    )}
+                  </div>
+                  <span className="text-xs text-zinc-600 shrink-0">
+                    {new Date(imp.imported_at).toLocaleDateString()}
+                  </span>
+                </div>
+              )
+            })}
+            <div className="flex gap-2 mt-2">
+              <input
+                type="text"
+                value={figmaFileIdInput}
+                onChange={(e) => setFigmaFileIdInput(e.target.value)}
+                placeholder="Figma file ID"
+                disabled={importing}
+                className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-purple-500"
+              />
+              <button
+                onClick={triggerFigmaImport}
+                disabled={importing || !figmaFileIdInput.trim()}
+                className="bg-purple-700 hover:bg-purple-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white px-3 py-1.5 rounded text-xs font-medium"
+              >
+                {importing ? 'Importing…' : '+ New import'}
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* ──────────── UAT RUNS (primary) ──────────── */}
       <section className="mb-10 border border-indigo-900 bg-indigo-950/20 rounded-lg p-5">

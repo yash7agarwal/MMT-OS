@@ -160,3 +160,61 @@ class UatFrameResult(Base):
     elapsed_s: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     run: Mapped[UatRun] = relationship(back_populates="frame_results")
+
+
+# ---------------------------------------------------------------------------
+# Figma import + extracted frame metadata
+# ---------------------------------------------------------------------------
+
+
+class FigmaImport(Base):
+    """A single snapshot of a Figma file persisted locally.
+
+    One import = one fetch of the Figma file + all its frame images. After a
+    successful import, all UAT runs and planners source Figma data from the DB
+    + local disk, not from Figma's API.
+    """
+    __tablename__ = "figma_imports"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    figma_file_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    file_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # fetching | ready | failed
+    status: Mapped[str] = mapped_column(String(20), default="fetching")
+    total_frames: Mapped[int] = mapped_column(Integer, default=0)
+    raw_json_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    frames: Mapped[list["FigmaFrame"]] = relationship(
+        back_populates="figma_import",
+        cascade="all, delete-orphan",
+        order_by="FigmaFrame.id",
+    )
+
+
+class FigmaFrame(Base):
+    """Metadata + local image path for a single frame from a FigmaImport."""
+    __tablename__ = "figma_frames"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    import_id: Mapped[int] = mapped_column(ForeignKey("figma_imports.id", ondelete="CASCADE"))
+    node_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    page_name: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # main_screen | sheet | modal | persuasion | component | other
+    frame_type: Mapped[str] = mapped_column(String(30), default="other")
+    image_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Absolute bounding box from Figma JSON (pixel dimensions at scale=1)
+    width: Mapped[float | None] = mapped_column(Float, nullable=True)
+    height: Mapped[float | None] = mapped_column(Float, nullable=True)
+    x: Mapped[float | None] = mapped_column(Float, nullable=True)
+    y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Structured design data extracted at import time (no LLM needed)
+    text_content: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    colors: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    fonts: Mapped[list | None] = mapped_column(JSON, nullable=True)
+
+    figma_import: Mapped[FigmaImport] = relationship(back_populates="frames")

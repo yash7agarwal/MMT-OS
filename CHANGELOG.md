@@ -2,6 +2,24 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-04-12
+### Added
+- `webapp/api/services/figma_importer.py` — proactive Figma importer that does ONE full fetch of a Figma file (structure + all frame images) and persists everything locally; subsequent UAT runs source data from DB + disk with zero Figma API calls
+- `webapp/api/routes/figma.py` — 5 endpoints: `POST/GET/DELETE /figma/imports`, `GET /figma/imports/{id}`, image serving per frame
+- `FigmaImport` + `FigmaFrame` ORM tables with structured design data columns (width/height/x/y, text_content, colors, fonts) extracted from the raw Figma node tree
+- `_extract_frame_metadata` + `_walk_node` helpers — pure-Python extraction of dimensions, unique hex colors, and font tuples from Figma node trees (no LLM, no additional API calls)
+- Frontend "🎨 Figma Imports" section on project detail page — inline form to trigger imports, list view with status/frame counts/error messages
+- Alert banner on new-run page that blocks UAT run submission if no matching ready `FigmaImport` exists for the chosen `figma_file_id`
+
+### Changed
+- `webapp/api/services/uat_runner.py` — replaced `_cached_figma_parse` call with a DB lookup for the latest `status=ready` `FigmaImport` matching the project + `figma_file_id`; per-frame loop now uses `FigmaFrame.image_path` directly; results in **zero Figma API calls** once an import has been made
+- `webapp/api/main.py` — mounts `figma` router (38 → 43 routes)
+- `webapp/web/app/projects/[id]/page.tsx` — adds Figma Imports panel above UAT Runs; shows file name + frame count + status badge for each import
+- `webapp/web/app/projects/[id]/runs/new/page.tsx` — polls `/api/projects/{id}/figma/imports`, disables submit when no matching import exists, shows which import will be used
+
+### Fixed
+- Graceful failure for Figma 429: the `POST /figma/imports` endpoint now persists a `status=failed` row with the full error trace, so the user can see what happened and retry without re-triggering the whole flow
+
 ## [0.6.0] — 2026-04-11
 ### Added
 - `webapp/api/services/uat_runner.py` — APK-driven E2E execution engine: installs candidate APK, parses Figma file (cached), launches app, drives VisionNavigator through each substantive Figma frame, screenshots, compares via FigmaComparator, persists `UatRun` + `UatFrameResult` rows, writes markdown report

@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from webapp.api.db import init_db
-from webapp.api.routes import edges, plans, projects, screens, uat_runs
+from webapp.api.routes import edges, figma, plans, projects, screens, uat_runs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,6 +48,7 @@ app.include_router(screens.router)
 app.include_router(edges.router)
 app.include_router(plans.router)
 app.include_router(uat_runs.router)
+app.include_router(figma.router)
 
 
 @app.on_event("startup")

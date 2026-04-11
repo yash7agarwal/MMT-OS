@@ -1,4 +1,4 @@
-# MMT-OS · v0.6.0
+# MMT-OS · v0.7.0
 
 > APK-driven UAT operating system — drop in a build, compare it to your Figma spec, get a per-frame report. Vision-guided navigation, multi-planner test suite, Telegram-first capture, self-healing execution.
 
@@ -170,6 +170,8 @@ adb devices
 ---
 
 ## Changelog
+
+**v0.7.0 (2026-04-12)** — Proactive Figma importer. `FigmaImport` + `FigmaFrame` tables, one-shot fetch of Figma file structure + all frame images + structured design data (dimensions, colors, fonts). Every UAT run after an import makes ZERO Figma API calls.
 
 **v0.6.0 (2026-04-11)** — APK-driven UAT runs with per-frame comparison reports, multi-planner suite (design_fidelity / functional_flow / deeplink_utility / edge_cases), Figma cache layer, Gemini provider swap, plan dedup + bulk delete.
 

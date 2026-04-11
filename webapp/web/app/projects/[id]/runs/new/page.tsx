@@ -1,9 +1,10 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { api } from '@/lib/api'
+import type { FigmaImportSummary } from '@/lib/types'
 
 export default function NewUatRunPage({ params }: { params: { id: string } }) {
   const projectId = parseInt(params.id, 10)
@@ -15,6 +16,14 @@ export default function NewUatRunPage({ params }: { params: { id: string } }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [progress, setProgress] = useState<string | null>(null)
+  const [imports, setImports] = useState<FigmaImportSummary[]>([])
+
+  useEffect(() => {
+    api.listFigmaImports(projectId).then(setImports).catch(() => {})
+  }, [projectId])
+
+  const readyImports = imports.filter((i) => i.status === 'ready')
+  const matchingImport = readyImports.find((i) => i.figma_file_id === figmaFileId.trim())
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -51,6 +60,28 @@ export default function NewUatRunPage({ params }: { params: { id: string } }) {
       <p className="text-zinc-400 mb-8">
         The system will install the APK, autonomously navigate through every Figma frame, and produce a comparison report.
       </p>
+
+      {/* Figma import status banner */}
+      {figmaFileId.trim() && !matchingImport && (
+        <div className="mb-5 border border-amber-900 bg-amber-950/30 text-amber-200 p-3 rounded-md text-sm">
+          ⚠️ No ready Figma import for <code className="text-amber-300">{figmaFileId}</code> in this project.
+          <div className="mt-1">
+            Go back to the project page and import this Figma file once before starting a run.
+            {' '}
+            <Link
+              href={`/projects/${projectId}`}
+              className="underline hover:text-amber-100"
+            >
+              Open project →
+            </Link>
+          </div>
+        </div>
+      )}
+      {matchingImport && (
+        <div className="mb-5 border border-emerald-900 bg-emerald-950/20 text-emerald-300 p-3 rounded-md text-sm">
+          ✓ Using Figma import #{matchingImport.id} · &quot;{matchingImport.file_name}&quot; · {matchingImport.total_frames} frames
+        </div>
+      )}
 
       <form onSubmit={handleSubmit} className="space-y-5">
         <div>
@@ -115,10 +146,14 @@ export default function NewUatRunPage({ params }: { params: { id: string } }) {
 
         <button
           type="submit"
-          disabled={submitting || !figmaFileId.trim()}
+          disabled={submitting || !figmaFileId.trim() || !matchingImport}
           className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white px-5 py-3 rounded-md font-semibold transition"
         >
-          {submitting ? '▶ Running UAT…' : '▶ Start UAT run'}
+          {submitting
+            ? '▶ Running UAT…'
+            : !matchingImport
+            ? '⚠ Import Figma file first'
+            : '▶ Start UAT run'}
         </button>
       </form>
 

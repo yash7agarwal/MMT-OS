@@ -3,6 +3,8 @@
 
 import type {
   Edge,
+  FigmaImport,
+  FigmaImportSummary,
   FlowInferenceResult,
   InferredEdge,
   Project,
@@ -176,4 +178,25 @@ export const api = {
     `/api/uat/runs/${runId}/frames/${frameId}/diff_image`,
   uatReportMdUrl: (runId: number) =>
     `/api/uat/runs/${runId}/report.md`,
+
+  // ---------- Figma imports ----------
+
+  listFigmaImports: (projectId: number) =>
+    request<FigmaImportSummary[]>(`/api/projects/${projectId}/figma/imports`),
+
+  getFigmaImport: (importId: number) =>
+    request<FigmaImport>(`/api/figma/imports/${importId}`),
+
+  createFigmaImport: (projectId: number, figma_file_id: string) =>
+    request<FigmaImport>(`/api/projects/${projectId}/figma/imports`, {
+      method: 'POST',
+      body: JSON.stringify({ figma_file_id }),
+      timeoutMs: 180_000, // import takes 30-90s for typical files
+    }),
+
+  deleteFigmaImport: (importId: number) =>
+    request<void>(`/api/figma/imports/${importId}`, { method: 'DELETE' }),
+
+  figmaFrameImageUrl: (importId: number, frameId: number) =>
+    `/api/figma/imports/${importId}/frames/${frameId}/image`,
 }
