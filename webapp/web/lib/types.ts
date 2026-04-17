@@ -13,6 +13,9 @@ export interface ProjectStats {
   screen_count: number
   edge_count: number
   plan_count: number
+  entity_count: number
+  observation_count: number
+  competitor_count: number
 }
 
 export interface ProjectDetail extends Project {
@@ -188,4 +191,130 @@ export interface FigmaImportSummary {
 
 export interface FigmaImport extends FigmaImportSummary {
   frames: FigmaFrame[]
+}
+
+// ---------- Product OS / Knowledge Graph ----------
+
+export interface KnowledgeEntity {
+  id: number
+  project_id: number
+  entity_type: string
+  name: string
+  canonical_name: string | null
+  description: string | null
+  metadata_json: Record<string, any> | null
+  source_agent: string | null
+  confidence: number
+  first_seen_at: string
+  last_updated_at: string
+}
+
+export interface KnowledgeEntityDetail extends KnowledgeEntity {
+  observations: KnowledgeObservation[]
+  relations: KnowledgeRelation[]
+}
+
+export interface KnowledgeRelation {
+  id: number
+  from_entity_id: number
+  to_entity_id: number
+  relation_type: string
+  metadata_json: Record<string, any> | null
+  source_agent: string | null
+  created_at: string
+}
+
+export interface KnowledgeObservation {
+  id: number
+  entity_id: number
+  observation_type: string
+  content: string
+  evidence_json: Record<string, any> | null
+  observed_at: string
+  recorded_at: string
+  source_url: string | null
+  source_agent: string | null
+}
+
+export interface KnowledgeArtifact {
+  id: number
+  project_id: number
+  artifact_type: string
+  title: string
+  content_md: string
+  entity_ids_json: number[] | null
+  generated_by_agent: string | null
+  generated_at: string
+  is_stale: boolean
+}
+
+export interface KnowledgeScreenshot {
+  id: number
+  entity_id: number | null
+  project_id: number
+  file_path: string
+  thumbnail_path: string | null
+  screen_label: string | null
+  app_package: string | null
+  app_version: string | null
+  visual_hash: string | null
+  captured_at: string
+  captured_by_agent: string | null
+  flow_session_id: string | null
+  sequence_order: number | null
+}
+
+export interface WorkItem {
+  id: number
+  project_id: number
+  agent_type: string
+  priority: number
+  category: string
+  description: string
+  status: string
+  result_summary: string | null
+  created_at: string
+  started_at: string | null
+  completed_at: string | null
+}
+
+export interface AgentSession {
+  id: number
+  project_id: number
+  agent_type: string
+  started_at: string
+  completed_at: string | null
+  items_completed: number
+  items_failed: number
+  knowledge_added: number
+  session_summary: string | null
+}
+
+export interface KnowledgeSummary {
+  entity_count_by_type: Record<string, number>
+  total_observations: number
+  total_artifacts: number
+  total_screenshots: number
+  stale_artifact_count: number
+}
+
+export interface ProductOSStatus {
+  is_running: boolean
+  project_id: number
+  agents: Record<string, {
+    last_session: AgentSession | null
+    pending_work_items: number
+    total_sessions: number
+    config: Record<string, any>
+  }>
+  knowledge: Record<string, number>
+}
+
+export interface QueryResponse {
+  answer: string
+  sources: Array<{ entity_id: number; type: string; name: string }>
+  screenshots: Array<{ id: number; path: string; label: string }>
+  confidence: number
+  data_freshness: string
+  follow_up_questions: string[]
 }

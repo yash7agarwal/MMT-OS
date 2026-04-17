@@ -1,13 +1,14 @@
 'use client'
 
+import { CheckCircle, Warning, XCircle } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
 import type { UatFrameResult, UatVerdict } from '@/lib/types'
 
-const VERDICT_STYLES: Record<UatVerdict, { label: string; classes: string }> = {
-  MATCHES:     { label: '✓ Matches',     classes: 'bg-emerald-950 text-emerald-300 border-emerald-900' },
-  DIFFERS:     { label: '⚠ Differs',     classes: 'bg-amber-950 text-amber-300 border-amber-900' },
-  UNREACHABLE: { label: '❌ Unreachable', classes: 'bg-zinc-900 text-zinc-500 border-zinc-800' },
-  ERROR:       { label: '⚠ Error',       classes: 'bg-red-950 text-red-300 border-red-900' },
+const VERDICT_STYLES: Record<UatVerdict, { label: string; icon: React.ReactNode; classes: string }> = {
+  MATCHES:     { label: 'Matches',     icon: <CheckCircle size={12} />, classes: 'bg-green-500/10 text-green-400 border border-green-500/20' },
+  DIFFERS:     { label: 'Differs',     icon: <Warning size={12} />,     classes: 'bg-amber-500/10 text-amber-400 border border-amber-500/20' },
+  UNREACHABLE: { label: 'Unreachable', icon: <XCircle size={12} />,     classes: 'bg-zinc-500/10 text-zinc-500 border border-zinc-500/20' },
+  ERROR:       { label: 'Error',       icon: <Warning size={12} />,     classes: 'bg-red-500/10 text-red-400 border border-red-500/20' },
 }
 
 interface Props {
@@ -17,19 +18,20 @@ interface Props {
 
 export function FrameComparisonCard({ runId, frame }: Props) {
   const style = VERDICT_STYLES[frame.verdict] || VERDICT_STYLES.ERROR
-  const scorePct = frame.match_score !== null ? `${(frame.match_score * 100).toFixed(0)}%` : '—'
+  const scorePct = frame.match_score !== null ? `${(frame.match_score * 100).toFixed(0)}%` : '--'
 
   return (
-    <div className="border border-zinc-800 bg-zinc-900/30 rounded-lg overflow-hidden">
+    <div className="border border-zinc-800 bg-zinc-900 rounded-xl overflow-hidden">
       {/* Header */}
       <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <h3 className="font-semibold text-sm truncate">{frame.figma_frame_name}</h3>
+          <h3 className="font-medium text-sm truncate">{frame.figma_frame_name}</h3>
           <p className="text-xs text-zinc-600 font-mono mt-0.5">{frame.figma_node_id}</p>
         </div>
         <div className="flex items-center gap-3 shrink-0">
           <span className="text-sm font-mono text-zinc-400">{scorePct}</span>
-          <span className={`text-xs px-2 py-0.5 rounded border ${style.classes}`}>
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${style.classes}`}>
+            {style.icon}
             {style.label}
           </span>
         </div>
@@ -56,13 +58,13 @@ export function FrameComparisonCard({ runId, frame }: Props) {
       {/* Issues */}
       {frame.issues && frame.issues.length > 0 && (
         <div className="px-4 pb-4">
-          <p className="text-xs text-zinc-500 mb-2 font-semibold uppercase tracking-wide">
+          <p className="text-xs text-zinc-500 mb-2 font-medium uppercase tracking-wider">
             Issues ({frame.issues.length})
           </p>
           <ul className="space-y-1">
             {frame.issues.map((issue, i) => (
-              <li key={i} className="text-sm text-zinc-300 pl-4 relative">
-                <span className="absolute left-0 text-zinc-600">•</span>
+              <li key={i} className="text-sm text-zinc-300 pl-4 relative leading-relaxed">
+                <span className="absolute left-0 text-zinc-600">&bull;</span>
                 {issue}
               </li>
             ))}
@@ -83,7 +85,7 @@ function ImageBox({ label, src }: { label: string; src: string | null }) {
   return (
     <div>
       <p className="text-xs text-zinc-500 mb-1.5 font-medium">{label}</p>
-      <div className="aspect-[9/19.5] bg-zinc-950 border border-zinc-800 rounded overflow-hidden">
+      <div className="aspect-[9/19.5] bg-zinc-950 border border-zinc-800 rounded-lg overflow-hidden">
         {src ? (
           <a href={src} target="_blank" rel="noreferrer" className="block w-full h-full">
             <img src={src} alt={label} className="w-full h-full object-contain" loading="lazy" />

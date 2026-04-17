@@ -2,18 +2,28 @@
 // All requests go through Next.js rewrite proxy → http://localhost:8000
 
 import type {
+  AgentSession,
   Edge,
   FigmaImport,
   FigmaImportSummary,
   FlowInferenceResult,
   InferredEdge,
+  KnowledgeArtifact,
+  KnowledgeEntity,
+  KnowledgeEntityDetail,
+  KnowledgeObservation,
+  KnowledgeScreenshot,
+  KnowledgeSummary,
+  ProductOSStatus,
   Project,
   ProjectDetail,
+  QueryResponse,
   Screen,
   TestCase,
   TestPlan,
   UatRun,
   UatRunSummary,
+  WorkItem,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
@@ -54,7 +64,7 @@ export const api = {
   // Projects
   listProjects: () => request<Project[]>('/api/projects'),
   getProject: (id: number) => request<ProjectDetail>(`/api/projects/${id}`),
-  createProject: (data: { name: string; app_package?: string; description?: string }) =>
+  createProject: (data: { name: string; app_package?: string; description?: string; enable_intelligence?: boolean; industry?: string; competitors_hint?: string }) =>
     request<Project>('/api/projects', { method: 'POST', body: JSON.stringify(data) }),
   updateProject: (id: number, data: Partial<Project>) =>
     request<Project>(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
@@ -199,4 +209,71 @@ export const api = {
 
   figmaFrameImageUrl: (importId: number, frameId: number) =>
     `/api/figma/imports/${importId}/frames/${frameId}/image`,
+
+  // ---------- Product OS / Knowledge ----------
+
+  // Knowledge entities
+  listEntities: (projectId: number, entityType?: string) =>
+    request<KnowledgeEntity[]>(
+      `/api/knowledge/entities?project_id=${projectId}${entityType ? `&entity_type=${entityType}` : ''}`
+    ),
+  getEntity: (id: number) =>
+    request<KnowledgeEntityDetail>(`/api/knowledge/entities/${id}`),
+  listEntityObservations: (id: number) =>
+    request<KnowledgeObservation[]>(`/api/knowledge/entities/${id}/observations`),
+  listEntityScreenshots: (id: number) =>
+    request<KnowledgeScreenshot[]>(`/api/knowledge/entities/${id}/screenshots`),
+
+  // Shortcuts
+  listCompetitors: (projectId: number) =>
+    request<KnowledgeEntity[]>(`/api/knowledge/competitors?project_id=${projectId}`),
+  listFlows: (projectId: number) =>
+    request<KnowledgeEntity[]>(`/api/knowledge/flows?project_id=${projectId}`),
+
+  // Artifacts
+  listArtifacts: (projectId: number, artifactType?: string) =>
+    request<KnowledgeArtifact[]>(
+      `/api/knowledge/artifacts?project_id=${projectId}${artifactType ? `&artifact_type=${artifactType}` : ''}`
+    ),
+  getArtifact: (id: number) =>
+    request<KnowledgeArtifact>(`/api/knowledge/artifacts/${id}`),
+
+  // Knowledge summary
+  knowledgeSummary: (projectId: number) =>
+    request<KnowledgeSummary>(`/api/knowledge/summary?project_id=${projectId}`),
+
+  // Timeline
+  timeline: (projectId: number, limit?: number) =>
+    request<any[]>(`/api/knowledge/timeline?project_id=${projectId}${limit ? `&limit=${limit}` : ''}`),
+
+  // Work items & sessions
+  listWorkItems: (projectId: number, agentType?: string, status?: string) =>
+    request<WorkItem[]>(
+      `/api/knowledge/work-items?project_id=${projectId}${agentType ? `&agent_type=${agentType}` : ''}${status ? `&status=${status}` : ''}`
+    ),
+  listSessions: (projectId: number, agentType?: string) =>
+    request<AgentSession[]>(
+      `/api/knowledge/sessions?project_id=${projectId}${agentType ? `&agent_type=${agentType}` : ''}`
+    ),
+
+  // Product OS orchestrator
+  productOSStatus: (projectId: number) =>
+    request<ProductOSStatus>(`/api/product-os/status?project_id=${projectId}`),
+  startProductOS: (projectId: number) =>
+    request<any>(`/api/product-os/start?project_id=${projectId}`, { method: 'POST' }),
+  stopProductOS: (projectId: number) =>
+    request<any>(`/api/product-os/stop?project_id=${projectId}`, { method: 'POST' }),
+  runAgent: (projectId: number, agentType: string) =>
+    request<any>(`/api/product-os/run/${agentType}?project_id=${projectId}`, { method: 'POST' }),
+  queryKnowledge: (projectId: number, question: string) =>
+    request<QueryResponse>(`/api/product-os/query`, {
+      method: 'POST',
+      body: JSON.stringify({ project_id: projectId, question }),
+      timeoutMs: 120_000,
+    }),
+  generateDigest: (projectId: number) =>
+    request<{ digest: string }>(`/api/product-os/digest?project_id=${projectId}`, {
+      method: 'POST',
+      timeoutMs: 60_000,
+    }),
 }

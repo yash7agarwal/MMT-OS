@@ -1,511 +1,349 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
+import {
+  DeviceMobile,
+  ChatCircle,
+  Binoculars,
+  Play,
+  Brain,
+  ArrowRight,
+  Monitor,
+  Image,
+  GitBranch,
+  ListChecks,
+  Lightbulb,
+  FileText,
+  Clock,
+  Newspaper,
+  TrendUp,
+  CurrencyDollar,
+  Wrench,
+  Scales,
+  ArrowSquareOut,
+  Warning,
+  CircleNotch,
+} from '@phosphor-icons/react'
 import { api } from '@/lib/api'
 import type {
-  Edge,
-  FigmaImportSummary,
   ProjectDetail,
-  Screen,
-  TestPlan,
-  UatRunSummary,
+  KnowledgeSummary,
 } from '@/lib/types'
-import { ScreenUploader } from '@/components/ScreenUploader'
-import { ScreenCard } from '@/components/ScreenCard'
-import { FlowInferencePanel } from '@/components/FlowInferencePanel'
-import { PlanTypeBadge } from '@/components/PlanTypeBadge'
 
-export default function ProjectDetailPage({ params }: { params: { id: string } }) {
+interface TimelineItem {
+  id: string
+  type: 'finding' | 'report'
+  title: string
+  content: string
+  observation_type: string | null
+  entity_name: string | null
+  entity_type: string | null
+  source_url: string | null
+  timestamp: string
+}
+
+const OBS_TYPE_META: Record<string, { icon: typeof Newspaper; color: string; label: string }> = {
+  news: { icon: Newspaper, color: 'text-blue-400', label: 'News' },
+  feature_change: { icon: Wrench, color: 'text-emerald-400', label: 'Feature' },
+  pricing_update: { icon: CurrencyDollar, color: 'text-amber-400', label: 'Pricing' },
+  metric: { icon: TrendUp, color: 'text-cyan-400', label: 'Metric' },
+  regulatory: { icon: Scales, color: 'text-red-400', label: 'Regulatory' },
+  general: { icon: Lightbulb, color: 'text-zinc-400', label: 'Finding' },
+}
+
+export default function OverviewPage({ params }: { params: { id: string } }) {
   const projectId = parseInt(params.id, 10)
   const [project, setProject] = useState<ProjectDetail | null>(null)
-  const [screens, setScreens] = useState<Screen[]>([])
-  const [edges, setEdges] = useState<Edge[]>([])
-  const [plans, setPlans] = useState<TestPlan[]>([])
-  const [runs, setRuns] = useState<UatRunSummary[]>([])
-  const [figmaImports, setFigmaImports] = useState<FigmaImportSummary[]>([])
-  const [figmaFileIdInput, setFigmaFileIdInput] = useState('rid4WC0zcs0yt3RjpST0dx')
-  const [importing, setImporting] = useState(false)
+  const [knowledge, setKnowledge] = useState<KnowledgeSummary | null>(null)
+  const [timeline, setTimeline] = useState<TimelineItem[]>([])
+  const [activeItems, setActiveItems] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [planFeature, setPlanFeature] = useState('')
-  const [planFigmaId, setPlanFigmaId] = useState('')
-  const [generatingPlan, setGeneratingPlan] = useState<string | null>(null)
 
-  const refresh = async () => {
-    try {
-      const [p, s, e, pls, rs, fi] = await Promise.all([
-        api.getProject(projectId),
-        api.listScreens(projectId),
-        api.listEdges(projectId),
-        api.listPlans(projectId),
-        api.listUatRuns(projectId),
-        api.listFigmaImports(projectId),
-      ])
+  const fetchData = useCallback(() => {
+    return Promise.all([
+      api.getProject(projectId),
+      api.knowledgeSummary(projectId).catch(() => null),
+      api.timeline(projectId, 15).catch(() => []),
+      api.listWorkItems(projectId).catch(() => []),
+    ]).then(([p, k, t, items]) => {
       setProject(p)
-      setScreens(s)
-      setEdges(e)
-      setPlans(pls)
-      setRuns(rs)
-      setFigmaImports(fi)
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
+      setKnowledge(k)
+      setTimeline(t)
+      setActiveItems((items as any[]).filter((i: any) => i.status === 'in_progress'))
       setLoading(false)
-    }
-  }
-
-  const triggerFigmaImport = async () => {
-    if (!figmaFileIdInput.trim()) return
-    setImporting(true)
-    try {
-      const imp = await api.createFigmaImport(projectId, figmaFileIdInput.trim())
-      setFigmaImports((prev) => [imp, ...prev])
-      if (imp.status === 'failed') {
-        alert(`Import failed: ${(imp.error || '').slice(0, 300)}`)
-      }
-    } catch (err: any) {
-      alert(`Import failed: ${err.message}`)
-    } finally {
-      setImporting(false)
-    }
-  }
-
-  const generateSinglePlan = async (plan_type: string) => {
-    if (!planFeature.trim()) {
-      alert('Enter a feature description first.')
-      return
-    }
-    if (plan_type === 'design_fidelity' && !planFigmaId.trim()) {
-      alert('Design fidelity requires a Figma file ID.')
-      return
-    }
-    setGeneratingPlan(plan_type)
-    try {
-      const newPlan = await api.createPlan(projectId, planFeature.trim(), {
-        plan_type,
-        figma_file_id: planFigmaId.trim() || undefined,
-      })
-      setPlans((prev) => [newPlan, ...prev])
-      window.location.href = `/projects/${projectId}/plans/${newPlan.id}`
-    } catch (err: any) {
-      alert(`Plan generation failed: ${err.message}`)
-    } finally {
-      setGeneratingPlan(null)
-    }
-  }
-
-  const generateSuite = async () => {
-    if (!planFeature.trim()) {
-      alert('Enter a feature description first.')
-      return
-    }
-    setGeneratingPlan('suite')
-    try {
-      const newPlans = await api.createPlanSuite(
-        projectId,
-        planFeature.trim(),
-        planFigmaId.trim() || undefined
-      )
-      setPlans((prev) => [...newPlans, ...prev])
-      alert(
-        `Generated ${newPlans.length} plans — ${newPlans
-          .map((p) => `${p.plan_type} (${p.cases.length})`)
-          .join(', ')}`
-      )
-      setPlanFeature('')
-    } catch (err: any) {
-      alert(`Suite generation failed: ${err.message}`)
-    } finally {
-      setGeneratingPlan(null)
-    }
-  }
-
-  useEffect(() => {
-    refresh()
+    }).catch(() => setLoading(false))
   }, [projectId])
 
-  if (loading) return <p className="text-zinc-500">Loading…</p>
-  if (error) return <p className="text-red-400">Error: {error}</p>
-  if (!project) return <p className="text-zinc-500">Project not found</p>
+  useEffect(() => {
+    fetchData()
+  }, [fetchData])
 
-  return (
-    <div>
-      <Link href="/" className="text-zinc-500 hover:text-zinc-300 text-sm mb-4 inline-block">
-        ← All projects
-      </Link>
+  // Auto-refresh every 10s when agents are active
+  useEffect(() => {
+    if (activeItems.length === 0) return
+    const interval = setInterval(fetchData, 10000)
+    return () => clearInterval(interval)
+  }, [activeItems.length, fetchData])
 
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="text-3xl font-bold">{project.name}</h1>
-          {project.app_package && (
-            <p className="text-zinc-500 font-mono text-sm mt-1">{project.app_package}</p>
-          )}
-          {project.description && (
-            <p className="text-zinc-400 mt-2 max-w-2xl">{project.description}</p>
-          )}
+  const timeAgo = (ts: string) => {
+    const diff = Date.now() - new Date(ts).getTime()
+    const mins = Math.floor(diff / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins}m ago`
+    const hrs = Math.floor(mins / 60)
+    if (hrs < 24) return `${hrs}h ago`
+    const days = Math.floor(hrs / 24)
+    if (days === 1) return 'yesterday'
+    return `${days}d ago`
+  }
+
+  const formatDate = (ts: string) => {
+    return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+              <div className="skeleton h-8 w-12 mb-2" />
+              <div className="skeleton h-3 w-16" />
+            </div>
+          ))}
         </div>
-        <div className="flex gap-6 text-center">
-          <div>
-            <div className="text-2xl font-semibold">{runs.length}</div>
-            <div className="text-xs text-zinc-500 uppercase tracking-wide">Runs</div>
-          </div>
-          <div>
-            <div className="text-2xl font-semibold">{screens.length}</div>
-            <div className="text-xs text-zinc-500 uppercase tracking-wide">Screens</div>
-          </div>
-          <div>
-            <div className="text-2xl font-semibold">{edges.length}</div>
-            <div className="text-xs text-zinc-500 uppercase tracking-wide">Edges</div>
+        <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+          <div className="skeleton h-5 w-48 mb-4" />
+          <div className="space-y-3">
+            {[0,1,2].map(i => <div key={i} className="skeleton h-16 w-full rounded-lg" />)}
           </div>
         </div>
       </div>
+    )
+  }
 
-      {/* ──────────── FIGMA IMPORTS (source of truth) ──────────── */}
-      <section className="mb-6 border border-purple-900 bg-purple-950/20 rounded-lg p-5">
-        <div className="flex items-start justify-between mb-3">
-          <div>
-            <h2 className="text-lg font-bold">🎨 Figma Imports</h2>
-            <p className="text-sm text-zinc-400 mt-1">
-              One fetch = all UAT runs free. Designs stored locally, no Figma API
-              calls on every run.
-            </p>
-          </div>
-          {figmaImports.filter((i) => i.status === 'ready').length > 0 && (
-            <span className="text-xs text-emerald-400">
-              ✓ {figmaImports.filter((i) => i.status === 'ready').length} ready
-            </span>
-          )}
-        </div>
+  const stats = project?.stats
+  const competitorCount = stats?.competitor_count ?? knowledge?.entity_count_by_type?.company ?? 0
+  const findingCount = stats?.observation_count ?? knowledge?.total_observations ?? 0
+  const reportCount = knowledge?.total_artifacts ?? 0
 
-        {figmaImports.length === 0 ? (
-          <div className="bg-zinc-950/60 rounded p-3">
-            <p className="text-xs text-zinc-500 mb-2">
-              No imports yet. Paste a Figma file ID and click Import.
-            </p>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={figmaFileIdInput}
-                onChange={(e) => setFigmaFileIdInput(e.target.value)}
-                placeholder="e.g. rid4WC0zcs0yt3RjpST0dx"
-                disabled={importing}
-                className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-purple-500"
-              />
-              <button
-                onClick={triggerFigmaImport}
-                disabled={importing || !figmaFileIdInput.trim()}
-                className="bg-purple-600 hover:bg-purple-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white px-4 py-2 rounded text-sm font-semibold"
-              >
-                {importing ? 'Importing…' : 'Import'}
-              </button>
+  return (
+    <div className="space-y-6">
+      {/* Clickable stats — each links to its detail page */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Link href={`/projects/${projectId}/competitors`} className="bg-zinc-900 border border-zinc-800 hover:border-emerald-500/30 rounded-xl p-4 transition-colors group">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-1.5">
+              <Binoculars size={14} className="text-zinc-500 group-hover:text-emerald-400 transition-colors" />
+              <span className="text-xs text-zinc-500 uppercase tracking-wider">Competitors</span>
             </div>
+            <ArrowRight size={12} className="text-zinc-700 group-hover:text-emerald-400 transition-colors" />
           </div>
-        ) : (
-          <div className="space-y-2">
-            {figmaImports.slice(0, 4).map((imp) => {
-              const statusColor =
-                imp.status === 'ready'
-                  ? 'bg-emerald-950 text-emerald-300 border-emerald-900'
-                  : imp.status === 'fetching'
-                  ? 'bg-blue-950 text-blue-300 border-blue-900'
-                  : 'bg-red-950 text-red-300 border-red-900'
+          <div className="text-2xl font-semibold">{competitorCount}</div>
+          <div className="text-xs text-zinc-600 mt-0.5">discovered</div>
+        </Link>
+
+        <Link href={`/projects/${projectId}/backlog`} className="bg-zinc-900 border border-zinc-800 hover:border-emerald-500/30 rounded-xl p-4 transition-colors group">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-1.5">
+              <Lightbulb size={14} className="text-zinc-500 group-hover:text-emerald-400 transition-colors" />
+              <span className="text-xs text-zinc-500 uppercase tracking-wider">Findings</span>
+            </div>
+            <ArrowRight size={12} className="text-zinc-700 group-hover:text-emerald-400 transition-colors" />
+          </div>
+          <div className="text-2xl font-semibold">{findingCount}</div>
+          <div className="text-xs text-zinc-600 mt-0.5">evidence-backed facts</div>
+        </Link>
+
+        <Link href={`/projects/${projectId}/intelligence`} className="bg-zinc-900 border border-zinc-800 hover:border-emerald-500/30 rounded-xl p-4 transition-colors group">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-1.5">
+              <FileText size={14} className="text-zinc-500 group-hover:text-emerald-400 transition-colors" />
+              <span className="text-xs text-zinc-500 uppercase tracking-wider">Reports</span>
+            </div>
+            <ArrowRight size={12} className="text-zinc-700 group-hover:text-emerald-400 transition-colors" />
+          </div>
+          <div className="text-2xl font-semibold">{reportCount}</div>
+          <div className="text-xs text-zinc-600 mt-0.5">competitor profiles & analyses</div>
+        </Link>
+
+        <Link href={`/projects/${projectId}/uat`} className="bg-zinc-900 border border-zinc-800 hover:border-emerald-500/30 rounded-xl p-4 transition-colors group">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-1.5">
+              <DeviceMobile size={14} className="text-zinc-500 group-hover:text-emerald-400 transition-colors" />
+              <span className="text-xs text-zinc-500 uppercase tracking-wider">UAT</span>
+            </div>
+            <ArrowRight size={12} className="text-zinc-700 group-hover:text-emerald-400 transition-colors" />
+          </div>
+          <div className="text-2xl font-semibold">{stats?.screen_count ?? 0}</div>
+          <div className="text-xs text-zinc-600 mt-0.5">screens mapped, {stats?.plan_count ?? 0} plans</div>
+        </Link>
+      </div>
+
+      {/* Live agent activity */}
+      <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+        {activeItems.length > 0 ? (
+          /* Show what's actively being researched */
+          <div className="divide-y divide-zinc-800/60">
+            {activeItems.map((item) => {
+              const elapsed = item.started_at
+                ? Math.floor((Date.now() - new Date(item.started_at).getTime()) / 1000)
+                : 0
+              const elapsedStr = elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
               return (
-                <div
-                  key={imp.id}
-                  className="border border-zinc-800 bg-zinc-950/60 rounded p-3 flex items-center justify-between gap-3"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium text-sm">
-                        {imp.file_name || 'Untitled file'}
-                      </span>
-                      <span className={`text-xs px-2 py-0.5 rounded border ${statusColor}`}>
-                        {imp.status}
-                      </span>
-                      <span className="text-xs text-zinc-500">
-                        {imp.total_frames} frames
-                      </span>
-                    </div>
-                    <p className="text-xs text-zinc-600 font-mono truncate mt-0.5">
-                      {imp.figma_file_id}
-                    </p>
-                    {imp.status === 'failed' && imp.error && (
-                      <p className="text-xs text-red-300 mt-1 truncate">
-                        {imp.error.split('\n')[0].slice(0, 140)}
-                      </p>
-                    )}
+                <div key={item.id} className="px-4 py-3">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <CircleNotch size={14} className="text-emerald-400 animate-spin shrink-0" />
+                    <span className="text-xs font-medium text-emerald-400">
+                      {item.agent_type.replace(/_/g, ' ')}
+                    </span>
+                    <span className="text-xs bg-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded">
+                      {item.category.replace(/_/g, ' ')}
+                    </span>
+                    <span className="text-xs text-zinc-600 tabular-nums ml-auto">{elapsedStr}</span>
                   </div>
-                  <span className="text-xs text-zinc-600 shrink-0">
-                    {new Date(imp.imported_at).toLocaleDateString()}
-                  </span>
+                  <p className="text-sm text-zinc-300 pl-5">
+                    {item.description.length > 150 ? item.description.slice(0, 150) + '...' : item.description}
+                  </p>
                 </div>
               )
             })}
-            <div className="flex gap-2 mt-2">
-              <input
-                type="text"
-                value={figmaFileIdInput}
-                onChange={(e) => setFigmaFileIdInput(e.target.value)}
-                placeholder="Figma file ID"
-                disabled={importing}
-                className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-3 py-1.5 text-xs font-mono focus:outline-none focus:border-purple-500"
-              />
-              <button
-                onClick={triggerFigmaImport}
-                disabled={importing || !figmaFileIdInput.trim()}
-                className="bg-purple-700 hover:bg-purple-600 disabled:bg-zinc-800 disabled:text-zinc-500 text-white px-3 py-1.5 rounded text-xs font-medium"
-              >
-                {importing ? 'Importing…' : '+ New import'}
-              </button>
+          </div>
+        ) : (
+          /* Nothing running — show a prompt to go to Intelligence tab */
+          <div className="px-4 py-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="h-2.5 w-2.5 rounded-full bg-zinc-600" />
+              <span className="text-sm text-zinc-500">No research running right now</span>
             </div>
+            <Link
+              href={`/projects/${projectId}/intelligence`}
+              className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+            >
+              <Brain size={12} />
+              Run agents
+            </Link>
           </div>
         )}
-      </section>
+      </div>
 
-      {/* ──────────── UAT RUNS (primary) ──────────── */}
-      <section className="mb-10 border border-indigo-900 bg-indigo-950/20 rounded-lg p-5">
-        <div className="flex items-start justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-bold">▶ UAT Runs</h2>
-            <p className="text-sm text-zinc-400 mt-1">
-              Install an APK, navigate the app autonomously, and get a Figma comparison report.
-            </p>
-          </div>
-          <Link
-            href={`/projects/${projectId}/runs/new`}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-md font-semibold transition text-sm"
-          >
-            + Start UAT run
-          </Link>
+      {/* Product Timeline — the main content */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+            <Clock size={14} />
+            Product Timeline
+          </h2>
+          {timeline.length > 0 && (
+            <span className="text-xs text-zinc-600">Last updated {timeAgo(timeline[0].timestamp)}</span>
+          )}
         </div>
 
-        {runs.length === 0 ? (
-          <p className="text-sm text-zinc-500 text-center py-4">
-            No runs yet. Start one above to execute your APK against the Figma spec.
-          </p>
+        {timeline.length === 0 ? (
+          <div className="bg-zinc-900 border border-dashed border-zinc-800 rounded-xl p-8 text-center">
+            <Brain size={28} className="text-zinc-700 mx-auto mb-3" />
+            <p className="text-sm text-zinc-500 mb-1">No findings yet</p>
+            <p className="text-xs text-zinc-600">Start the agents above to begin building intelligence about your product and competitors.</p>
+          </div>
         ) : (
-          <div className="space-y-2">
-            {runs.slice(0, 5).map((r) => {
-              const score = r.overall_match_score !== null ? `${(r.overall_match_score * 100).toFixed(0)}%` : '—'
-              const statusColor = r.status === 'completed'
-                ? 'bg-emerald-950 text-emerald-300'
-                : r.status === 'failed'
-                ? 'bg-red-950 text-red-300'
-                : r.status === 'running'
-                ? 'bg-blue-950 text-blue-300'
-                : 'bg-zinc-800 text-zinc-400'
-              return (
-                <Link
-                  key={r.id}
-                  href={`/projects/${projectId}/runs/${r.id}`}
-                  className="border border-zinc-800 bg-zinc-950/60 hover:border-zinc-700 hover:bg-zinc-900 rounded p-3 flex items-center justify-between gap-3 transition"
-                >
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <span className="font-medium text-sm">Run #{r.id}</span>
-                    <span className={`text-xs px-2 py-0.5 rounded ${statusColor}`}>{r.status}</span>
-                    {r.apk_version && (
-                      <span className="text-xs text-zinc-500 font-mono">v{r.apk_version}</span>
-                    )}
-                    <span className="text-xs text-zinc-600">
-                      ✅{r.matched} ⚠️{r.mismatched} ❌{r.unreachable}
-                    </span>
+          <div className="relative">
+            {/* Vertical timeline line */}
+            <div className="absolute left-[17px] top-2 bottom-2 w-px bg-zinc-800" />
+
+            <div className="space-y-1">
+              {timeline.map((item, idx) => {
+                const meta = item.observation_type ? OBS_TYPE_META[item.observation_type] || OBS_TYPE_META.general : null
+                const Icon = item.type === 'report' ? FileText : (meta?.icon ?? Lightbulb)
+                const iconColor = item.type === 'report' ? 'text-violet-400' : (meta?.color ?? 'text-zinc-400')
+
+                return (
+                  <div key={item.id} className="relative pl-10 group">
+                    {/* Timeline dot */}
+                    <div className={`absolute left-2.5 top-4 w-2 h-2 rounded-full ${item.type === 'report' ? 'bg-violet-400' : (meta?.color?.replace('text-', 'bg-') ?? 'bg-zinc-400')}`} />
+
+                    <div className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl p-4 transition-colors">
+                      {/* Header row */}
+                      <div className="flex items-start justify-between gap-3 mb-1.5">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Icon size={14} className={iconColor} weight="duotone" />
+                          {item.type === 'report' ? (
+                            <span className="text-xs bg-violet-500/10 text-violet-400 border border-violet-500/20 px-1.5 py-0.5 rounded">Report</span>
+                          ) : meta ? (
+                            <span className={`text-xs ${meta.color.replace('text-', 'bg-').replace('400', '500/10')} ${meta.color} border ${meta.color.replace('text-', 'border-').replace('400', '500/20')} px-1.5 py-0.5 rounded`}>
+                              {meta.label}
+                            </span>
+                          ) : null}
+                          {item.entity_name && (
+                            <span className="text-sm font-medium text-zinc-200 truncate">{item.entity_name}</span>
+                          )}
+                        </div>
+                        <span className="text-xs text-zinc-600 shrink-0 whitespace-nowrap">{formatDate(item.timestamp)}</span>
+                      </div>
+
+                      {/* Content */}
+                      <p className="text-sm text-zinc-400 leading-relaxed">
+                        {item.content.length > 250 ? item.content.slice(0, 250) + '...' : item.content}
+                      </p>
+
+                      {/* Source link */}
+                      {item.source_url && (
+                        <a
+                          href={item.source_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs text-zinc-600 hover:text-emerald-400 mt-2 transition-colors"
+                        >
+                          <ArrowSquareOut size={10} />
+                          {(() => {
+                            try { return new URL(item.source_url).hostname } catch { return 'source' }
+                          })()}
+                        </a>
+                      )}
+                    </div>
                   </div>
-                  <span className="text-lg font-bold text-zinc-300">{score}</span>
-                </Link>
-              )
-            })}
-            {runs.length > 5 && (
+                )
+              })}
+            </div>
+
+            {timeline.length >= 15 && (
               <Link
-                href={`/projects/${projectId}/runs`}
-                className="block text-center text-sm text-indigo-400 hover:text-indigo-300 pt-2"
+                href={`/projects/${projectId}/backlog`}
+                className="block text-center text-xs text-zinc-500 hover:text-emerald-400 mt-3 transition-colors"
               >
-                View all {runs.length} runs →
+                View full activity log
               </Link>
             )}
           </div>
         )}
-      </section>
+      </div>
 
-      {/* Bulk uploader (secondary — for bootstrapping the screen map) */}
-      <section className="mb-8">
-        <h2 className="text-lg font-semibold mb-3">
-          Upload screenshots
-          <span className="text-xs text-zinc-500 font-normal ml-2">(optional — helps bootstrap the app graph)</span>
-        </h2>
-        <ScreenUploader
-          projectId={projectId}
-          onUploaded={(newScreens) => setScreens((prev) => [...prev, ...newScreens])}
-        />
-      </section>
-
-      {/* Flow inference */}
-      {screens.length >= 2 && (
-        <section className="mb-8">
-          <h2 className="text-lg font-semibold mb-3">2. Map the flow</h2>
-          <FlowInferencePanel
-            projectId={projectId}
-            screens={screens}
-            onEdgesAccepted={refresh}
-          />
-        </section>
-      )}
-
-      {/* Screens grid */}
-      {screens.length > 0 && (
-        <section>
-          <h2 className="text-lg font-semibold mb-3">
-            Screens ({screens.length})
-          </h2>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {screens.map((s) => (
-              <ScreenCard
-                key={s.id}
-                screen={s}
-                onUpdated={(updated) =>
-                  setScreens((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))
-                }
-                onDeleted={(id) =>
-                  setScreens((prev) => prev.filter((x) => x.id !== id))
-                }
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Test plans */}
-      {screens.length > 0 && (
-        <section className="mt-8">
-          <h2 className="text-lg font-semibold mb-3">3. Generate UAT plans</h2>
-          <div className="border border-zinc-800 bg-zinc-900/30 rounded-lg p-4 mb-4">
-            <label className="block text-sm text-zinc-400 mb-2">
-              Describe the feature you want to UAT
-            </label>
-            <textarea
-              value={planFeature}
-              onChange={(e) => setPlanFeature(e.target.value)}
-              placeholder="e.g. We launched a new Hotel Details Page that shows photos, amenities, price per night, and a Book Now button"
-              rows={3}
-              className="w-full bg-zinc-900 border border-zinc-800 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-indigo-500"
-            />
-            <label className="block text-sm text-zinc-400 mt-3 mb-2">
-              Figma file ID <span className="text-zinc-600">(optional — enables design fidelity plan)</span>
-            </label>
-            <input
-              type="text"
-              value={planFigmaId}
-              onChange={(e) => setPlanFigmaId(e.target.value)}
-              placeholder="e.g. rid4WC0zcs0yt3RjpST0dx"
-              className="w-full bg-zinc-900 border border-zinc-800 rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:border-indigo-500"
-            />
-
-            <div className="mt-4">
-              <button
-                onClick={generateSuite}
-                disabled={!!generatingPlan || !planFeature.trim()}
-                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-zinc-800 disabled:text-zinc-500 text-white px-4 py-3 rounded-md font-semibold text-sm transition"
-              >
-                {generatingPlan === 'suite' ? 'Generating suite…' : '✨ Generate full UAT suite (all plan types)'}
-              </button>
-            </div>
-
-            <div className="mt-4">
-              <p className="text-xs text-zinc-500 mb-2">Or generate a single specialized plan:</p>
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                {[
-                  { type: 'design_fidelity', label: '🎨 Design' },
-                  { type: 'functional_flow', label: '🔀 Functional' },
-                  { type: 'deeplink_utility', label: '🔗 Deeplink' },
-                  { type: 'edge_cases', label: '⚠️ Edge cases' },
-                  { type: 'feature_flow', label: '📋 Feature flow' },
-                ].map(({ type, label }) => (
-                  <button
-                    key={type}
-                    onClick={() => generateSinglePlan(type)}
-                    disabled={!!generatingPlan || !planFeature.trim()}
-                    className="bg-zinc-800 hover:bg-zinc-700 disabled:bg-zinc-900 disabled:text-zinc-600 text-zinc-200 px-3 py-2 rounded text-xs font-medium transition"
-                  >
-                    {generatingPlan === type ? '…' : label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <p className="text-xs text-zinc-600 mt-3">
-              Tip: Telegram <code className="text-zinc-500">/uatsuite &lt;description&gt;</code> also runs the full suite
-            </p>
-          </div>
-
-          {plans.length > 0 && (
-            <div className="space-y-2">
-              {plans.map((p) => (
-                <Link
-                  key={p.id}
-                  href={`/projects/${projectId}/plans/${p.id}`}
-                  className="border border-zinc-800 bg-zinc-900/50 hover:border-zinc-700 hover:bg-zinc-900 rounded p-3 text-sm flex items-center justify-between transition gap-3"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-medium">Plan #{p.id}</span>
-                      <PlanTypeBadge type={p.plan_type} />
-                      <span
-                        className={`text-xs px-1.5 py-0.5 rounded ${
-                          p.status === 'approved'
-                            ? 'bg-emerald-950 text-emerald-300'
-                            : 'bg-zinc-800 text-zinc-400'
-                        }`}
-                      >
-                        {p.status}
-                      </span>
-                      <span className="text-xs text-zinc-600">{p.cases.length} cases</span>
-                    </div>
-                    <p className="text-xs text-zinc-500 truncate mt-0.5 italic">
-                      "{p.feature_description}"
-                    </p>
-                  </div>
-                  <span className="text-xs text-zinc-600 shrink-0">
-                    {new Date(p.created_at).toLocaleDateString()}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      {edges.length > 0 && (
-        <section className="mt-8">
-          <h2 className="text-lg font-semibold mb-3">Edges ({edges.length})</h2>
-          <div className="space-y-2">
-            {edges.map((e) => {
-              const from = screens.find((s) => s.id === e.from_screen_id)
-              const to = screens.find((s) => s.id === e.to_screen_id)
-              return (
-                <div
-                  key={e.id}
-                  className="border border-zinc-800 bg-zinc-900/50 rounded p-3 text-sm flex items-center justify-between"
-                >
-                  <div>
-                    <span className="font-medium">{from?.display_name || from?.name}</span>
-                    <span className="text-zinc-600 mx-2">→</span>
-                    <span className="font-medium">{to?.display_name || to?.name}</span>
-                    <span className="text-zinc-500 ml-3 text-xs">via {e.trigger}</span>
-                  </div>
-                  <button
-                    onClick={async () => {
-                      await api.deleteEdge(e.id)
-                      setEdges((prev) => prev.filter((x) => x.id !== e.id))
-                    }}
-                    className="text-xs text-zinc-500 hover:text-red-400"
-                  >
-                    Remove
-                  </button>
+      {/* Quick actions */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {[
+          { label: 'Ask a question', desc: '"How does our booking compare to Booking.com?"', href: `/projects/${projectId}/ask`, icon: ChatCircle },
+          { label: 'View competitors', desc: `${competitorCount} companies tracked`, href: `/projects/${projectId}/competitors`, icon: Binoculars },
+          { label: 'Manage agents', desc: 'Run agents, view backlog, track progress', href: `/projects/${projectId}/intelligence`, icon: Brain },
+        ].map((action) => {
+          const Icon = action.icon
+          return (
+            <Link
+              key={action.label}
+              href={action.href}
+              className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl p-4 flex items-start gap-3 transition-colors group"
+            >
+              <Icon size={18} className="text-emerald-400 mt-0.5 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-sm flex items-center gap-1.5">
+                  {action.label}
+                  <ArrowRight size={12} className="text-zinc-600 group-hover:text-emerald-400 transition-colors" />
                 </div>
-              )
-            })}
-          </div>
-        </section>
-      )}
+                <p className="text-xs text-zinc-500 mt-0.5">{action.desc}</p>
+              </div>
+            </Link>
+          )
+        })}
+      </div>
     </div>
   )
 }

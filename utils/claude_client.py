@@ -22,7 +22,12 @@ def _provider() -> str:
 def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "ANTHROPIC_API_KEY not set. Add it to your .env file."
+            )
+        _client = anthropic.Anthropic(api_key=api_key)
     return _client
 
 

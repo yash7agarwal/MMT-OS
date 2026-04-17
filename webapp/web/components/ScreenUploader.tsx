@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useState } from 'react'
+import { Upload, CheckCircle } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
 import type { Screen } from '@/lib/types'
 
@@ -56,20 +57,20 @@ export function ScreenUploader({ projectId, onUploaded }: Props) {
           setDragging(false)
           handleFiles(e.dataTransfer.files)
         }}
-        className={`border-2 border-dashed rounded-lg p-10 text-center transition ${
+        className={`border-2 border-dashed rounded-xl p-10 text-center transition-colors duration-200 ${
           dragging
-            ? 'border-indigo-500 bg-indigo-950/30'
-            : 'border-zinc-700 hover:border-zinc-600'
+            ? 'border-emerald-500/50 bg-emerald-500/5'
+            : 'border-zinc-800 hover:border-zinc-700'
         }`}
       >
-        <div className="text-4xl mb-3">📱</div>
-        <p className="text-zinc-300 font-medium mb-1">
+        <Upload size={32} className="text-zinc-500 mx-auto mb-3" />
+        <p className="text-zinc-300 font-medium mb-1 text-sm">
           Drop your screenshots here
         </p>
         <p className="text-zinc-500 text-sm mb-4">
-          Drag & drop multiple PNG/JPG files at once. They can be in any order — Claude will analyze each and infer the flow.
+          Drag & drop multiple PNG/JPG files at once. They can be in any order -- Claude will analyze each and infer the flow.
         </p>
-        <label className="inline-block bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-4 py-2 rounded-md text-sm cursor-pointer transition">
+        <label className="inline-block bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 hover:border-zinc-600 text-zinc-200 px-4 py-2 rounded-lg text-sm cursor-pointer transition-colors duration-150">
           Or browse files
           <input
             type="file"
@@ -85,19 +86,20 @@ export function ScreenUploader({ projectId, onUploaded }: Props) {
         <div className="mt-3 text-sm text-zinc-400">
           {uploading ? (
             <>
-              Analyzing {progress.total} screenshot{progress.total !== 1 && 's'} with Claude vision…
+              Analyzing {progress.total} screenshot{progress.total !== 1 && 's'} with Claude vision...
               <span className="text-zinc-600 ml-2">(~2-3s per screen)</span>
             </>
           ) : (
-            <span className="text-emerald-400">
-              ✓ Uploaded and analyzed {progress.done} screen{progress.done !== 1 && 's'}
+            <span className="text-emerald-400 inline-flex items-center gap-1.5">
+              <CheckCircle size={14} />
+              Uploaded and analyzed {progress.done} screen{progress.done !== 1 && 's'}
             </span>
           )}
         </div>
       )}
 
       {error && (
-        <div className="mt-3 border border-red-900 bg-red-950 text-red-200 p-3 rounded-md text-sm">
+        <div className="mt-3 border border-red-500/20 bg-red-500/10 text-red-200 p-3 rounded-xl text-sm">
           {error}
         </div>
       )}

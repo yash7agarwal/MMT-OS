@@ -25,6 +25,19 @@ def create_project(payload: schemas.ProjectCreate, db: Session = Depends(get_db)
     db.add(project)
     db.commit()
     db.refresh(project)
+
+    if payload.enable_intelligence:
+        import threading
+        from agent.product_os_orchestrator import get_orchestrator
+
+        _project_id = project.id
+
+        def _start_agents():
+            orch = get_orchestrator(_project_id)
+            orch.run_agent_session("competitive_intel")
+
+        threading.Thread(target=_start_agents, daemon=True).start()
+
     return project
 
 
@@ -33,10 +46,16 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     project = db.get(models.Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    entity_count = db.query(models.KnowledgeEntity).filter(models.KnowledgeEntity.project_id == project_id).count()
+    observation_count = db.query(models.KnowledgeObservation).join(models.KnowledgeEntity).filter(models.KnowledgeEntity.project_id == project_id).count()
+    competitor_count = db.query(models.KnowledgeEntity).filter(models.KnowledgeEntity.project_id == project_id, models.KnowledgeEntity.entity_type == "company").count()
     stats = schemas.ProjectStats(
         screen_count=db.query(models.Screen).filter(models.Screen.project_id == project_id).count(),
         edge_count=db.query(models.Edge).filter(models.Edge.project_id == project_id).count(),
         plan_count=db.query(models.TestPlan).filter(models.TestPlan.project_id == project_id).count(),
+        entity_count=entity_count,
+        observation_count=observation_count,
+        competitor_count=competitor_count,
     )
     return schemas.ProjectDetail(
         id=project.id,

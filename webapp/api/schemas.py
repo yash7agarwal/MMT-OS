@@ -13,6 +13,9 @@ class ProjectCreate(BaseModel):
     name: str
     app_package: str | None = None
     description: str | None = None
+    enable_intelligence: bool = False
+    industry: str | None = None
+    competitors_hint: str | None = None
 
 
 class ProjectUpdate(BaseModel):
@@ -34,6 +37,9 @@ class ProjectStats(BaseModel):
     screen_count: int
     edge_count: int
     plan_count: int
+    entity_count: int = 0
+    observation_count: int = 0
+    competitor_count: int = 0
 
 
 class ProjectDetail(ProjectOut):
@@ -257,3 +263,136 @@ class FigmaImportSummary(BaseModel):
 class FigmaImportOut(FigmaImportSummary):
     """Full detail — includes all frames."""
     frames: list[FigmaFrameOut] = []
+
+
+# ---------- Knowledge Graph (Product OS) ----------
+
+
+class KnowledgeEntityOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    entity_type: str
+    name: str
+    canonical_name: str | None
+    description: str | None
+    metadata_json: dict | None
+    source_agent: str | None
+    confidence: float
+    first_seen_at: datetime
+    last_updated_at: datetime
+
+
+class KnowledgeEntityDetail(KnowledgeEntityOut):
+    observations: list["KnowledgeObservationOut"] = []
+    relations: list["KnowledgeRelationOut"] = []
+
+
+class KnowledgeRelationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    from_entity_id: int
+    to_entity_id: int
+    relation_type: str
+    metadata_json: dict | None
+    source_agent: str | None
+    created_at: datetime
+
+
+class KnowledgeObservationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    entity_id: int
+    observation_type: str
+    content: str
+    evidence_json: dict | None
+    observed_at: datetime
+    recorded_at: datetime
+    source_url: str | None
+    source_agent: str | None
+
+
+class KnowledgeArtifactOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    artifact_type: str
+    title: str
+    content_md: str
+    entity_ids_json: list | None
+    generated_by_agent: str | None
+    generated_at: datetime
+    is_stale: bool
+
+
+class KnowledgeScreenshotOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    entity_id: int | None
+    project_id: int
+    file_path: str
+    thumbnail_path: str | None
+    screen_label: str | None
+    app_package: str | None
+    app_version: str | None
+    visual_hash: str | None
+    captured_at: datetime
+    captured_by_agent: str | None
+    flow_session_id: str | None
+    sequence_order: int | None
+
+
+class WorkItemOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    agent_type: str
+    priority: int
+    category: str
+    description: str
+    status: str
+    result_summary: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+class AgentSessionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    project_id: int
+    agent_type: str
+    started_at: datetime
+    completed_at: datetime | None
+    items_completed: int
+    items_failed: int
+    knowledge_added: int
+    session_summary: str | None
+
+
+class KnowledgeSummary(BaseModel):
+    entity_count_by_type: dict[str, int]
+    total_observations: int
+    total_artifacts: int
+    total_screenshots: int
+    stale_artifact_count: int
+
+
+class ProductOSStatus(BaseModel):
+    is_running: bool
+    agents: dict[str, dict]  # agent_type -> {last_session, work_items_pending, etc}
+    knowledge_summary: KnowledgeSummary | None
+
+
+class QueryRequest(BaseModel):
+    question: str
+    project_id: int
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    sources: list[dict] = []
+    screenshots: list[dict] = []
+    confidence: float
+    data_freshness: str
+    follow_up_questions: list[str] = []

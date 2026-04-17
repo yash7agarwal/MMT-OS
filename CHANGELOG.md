@@ -2,6 +2,39 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] — 2026-04-18
+### Added
+- **Multi-agent Product OS**: 3 autonomous agents (Competitive Intel, Industry Research, UX Intelligence) that self-direct research, build cumulative knowledge, and persist findings to a shared knowledge graph
+- `agent/base_autonomous_agent.py` — base class with work queue, tool-use loop, bounded sessions
+- `agent/knowledge_store.py` — knowledge graph CRUD: entities, relations, temporal observations, artifacts, screenshots, embeddings
+- `agent/competitive_intel_agent.py` — discovers competitors, profiles features/pricing/strategic moves with evidence-backed findings
+- `agent/industry_research_agent.py` — tracks industry trends, regulations, market data from analyst publications
+- `agent/ux_intel_agent.py` — deep-maps app flows via Android device, curates user journeys
+- `agent/product_os_orchestrator.py` — schedules agent sessions, manages device locks, generates daily digests
+- `agent/query_engine.py` — natural language query pipeline: intent classification, knowledge retrieval, Claude-synthesized answers
+- `tools/web_research.py` — web search (Tavily/Brave/DuckDuckGo fallback), page content extraction, Play Store app discovery
+- 8 new DB tables: `knowledge_entities`, `knowledge_relations`, `knowledge_observations`, `knowledge_artifacts`, `knowledge_screenshots`, `work_items`, `agent_sessions`, `knowledge_embeddings`
+- `webapp/api/routes/knowledge.py` — 12 read-only knowledge graph API endpoints including `/timeline` feed
+- `webapp/api/routes/product_os.py` — 6 orchestrator + query API endpoints
+- Unified tabbed project hub: Overview, Intelligence, UAT, Competitors, Ask, Backlog — all under `/projects/[id]/`
+- Product Timeline on Overview page with color-coded findings, source links, and data freshness
+- Telegram `/new` command — create a product and start research agents from phone in one message
+- Telegram `/intel` commands — status, competitors, ask, digest, run agents from phone
+- Vercel deployment config (`vercel.json`, `NEXT_PUBLIC_API_URL` env var support)
+
+### Changed
+- **Rebranded "AppUAT" to "Prism"** — generic product intelligence platform, not tied to any company
+- Unified project creation: "New product" form with intelligence toggle, industry field, competitor hints
+- `ProjectStats` enriched with `entity_count`, `observation_count`, `competitor_count`
+- `ProjectCreate` extended with `enable_intelligence`, `industry`, `competitors_hint` for auto-start
+- Competitor confidence now dynamic (0.1 stub → 0.9 profiled) based on actual observation count
+- Agent system prompts rewritten for specificity: "SPECIFIC over broad", evidence-backed findings, 8-10 tool call efficiency bounds
+- Removed confusing "autopilot" concept — each agent has independent Run button with clear status
+
+### Fixed
+- `runningAgent` React state never cleared after agent finished — caused permanent stale "Running" in UI
+- Stale `.next` cache causing MODULE_NOT_FOUND at runtime after page moves (always clear before dev restart)
+
 ## [0.7.1] — 2026-04-12
 ### Fixed
 - `tools/vision_navigator.py`: bumped `max_tokens` 256 → 1024 — fixes Gemini returning truncated JSON that caused every navigation step to fail with parse errors

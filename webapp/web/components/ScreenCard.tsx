@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { Pencil, Trash } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
 import type { Screen } from '@/lib/types'
 
@@ -31,7 +32,7 @@ export function ScreenCard({ screen, onUpdated, onDeleted }: Props) {
   }
 
   return (
-    <div className="border border-zinc-800 bg-zinc-900/50 rounded-lg overflow-hidden hover:border-zinc-700 transition">
+    <div className="border border-zinc-800 bg-zinc-900 rounded-xl overflow-hidden hover:border-zinc-700 transition-colors duration-200">
       <div className="aspect-[9/19.5] bg-zinc-950 relative">
         <img
           src={api.screenImageUrl(screen.id)}
@@ -47,26 +48,26 @@ export function ScreenCard({ screen, onUpdated, onDeleted }: Props) {
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-sm font-medium focus:outline-none focus:border-indigo-500"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1 text-sm font-medium focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-colors duration-150"
               placeholder="Display name"
             />
             <textarea
               value={purpose}
               onChange={(e) => setPurpose(e.target.value)}
               rows={2}
-              className="w-full bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs focus:outline-none focus:border-indigo-500"
+              className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-colors duration-150"
               placeholder="Purpose"
             />
             <div className="flex gap-2">
               <button
                 onClick={save}
-                className="bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-1 rounded text-xs"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-1 rounded-lg text-xs transition-colors duration-150 active:scale-[0.98]"
               >
                 Save
               </button>
               <button
                 onClick={() => setEditing(false)}
-                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded text-xs"
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-2 py-1 rounded-lg text-xs transition-colors duration-150"
               >
                 Cancel
               </button>
@@ -81,7 +82,7 @@ export function ScreenCard({ screen, onUpdated, onDeleted }: Props) {
               {screen.name}
             </p>
             {screen.purpose && (
-              <p className="text-xs text-zinc-400 line-clamp-2 mb-2">{screen.purpose}</p>
+              <p className="text-xs text-zinc-400 line-clamp-2 mb-2 leading-relaxed">{screen.purpose}</p>
             )}
             {screen.elements && screen.elements.length > 0 && (
               <p className="text-xs text-zinc-600">
@@ -91,14 +92,16 @@ export function ScreenCard({ screen, onUpdated, onDeleted }: Props) {
             <div className="flex gap-3 mt-3">
               <button
                 onClick={() => setEditing(true)}
-                className="text-xs text-zinc-400 hover:text-zinc-200"
+                className="inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200 transition-colors duration-150"
               >
+                <Pencil size={12} />
                 Edit
               </button>
               <button
                 onClick={remove}
-                className="text-xs text-zinc-500 hover:text-red-400"
+                className="inline-flex items-center gap-1 text-xs text-zinc-500 hover:text-red-400 transition-colors duration-150"
               >
+                <Trash size={12} />
                 Delete
               </button>
             </div>
