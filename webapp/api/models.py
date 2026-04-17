@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for AppUAT.
+"""SQLAlchemy ORM models for Prism.
 
 Five tables:
 - Project: an app being mapped (e.g., "MakeMyTrip")

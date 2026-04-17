@@ -1,5 +1,5 @@
 """
-telegram_bot/run_bot.py — Entry point for the MMT-OS Telegram bot.
+telegram_bot/run_bot.py — Entry point for the Prism Telegram bot.
 
 Usage:
     python -m telegram_bot.run_bot

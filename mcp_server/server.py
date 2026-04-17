@@ -37,7 +37,7 @@ from utils.config import get
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP("MMT-OS Android UAT")
+mcp = FastMCP("Prism Android UAT")
 
 # Lazy device connection — connect on first tool use
 _device: AndroidDevice | None = None

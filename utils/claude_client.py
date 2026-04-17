@@ -56,8 +56,14 @@ def ask(
             return resp.content[0].text
         except anthropic.RateLimitError:
             time.sleep(2 ** attempt * 5)
-        except anthropic.APIStatusError as e:
-            if e.status_code >= 500 and attempt < retries - 1:
+        except (anthropic.BadRequestError, anthropic.APIStatusError) as e:
+            err_str = str(e).lower()
+            if "credit balance" in err_str or "usage limits" in err_str or "billing" in err_str:
+                import logging
+                logging.getLogger(__name__).warning("[claude] Credit limit — falling back to Gemini")
+                from utils import gemini_client
+                return gemini_client.ask(prompt=prompt, max_tokens=max_tokens, model=model, system=system, retries=retries)
+            if hasattr(e, 'status_code') and e.status_code >= 500 and attempt < retries - 1:
                 time.sleep(2 ** attempt * 2)
             else:
                 raise
@@ -140,7 +146,18 @@ def ask_with_tools(
     """
     Call Claude with tool definitions. Returns the full Message object.
     Used by subagents that need to inspect tool_use blocks in the response.
+
+    Auto-falls back to Gemini when Claude hits billing limits (400 with
+    'usage limits' message) or is unavailable. The Gemini response is
+    wrapped in a compatible object so callers don't need to change.
     """
+    if _provider() == "gemini":
+        from utils import gemini_client
+        return gemini_client.ask_with_tools(
+            messages=messages, tools=tools, system=system,
+            model=model, max_tokens=max_tokens, retries=retries,
+        )
+
     kwargs: dict = {
         "model": model,
         "max_tokens": max_tokens,
@@ -150,14 +167,54 @@ def ask_with_tools(
     if system:
         kwargs["system"] = system
 
-    for attempt in range(retries):
-        try:
-            return _get_client().messages.create(**kwargs)
-        except anthropic.RateLimitError:
+    try:
+        return _get_client().messages.create(**kwargs)
+    except (anthropic.BadRequestError, anthropic.AuthenticationError) as e:
+        err_str = str(e).lower()
+        if "credit balance" in err_str or "usage limits" in err_str or "billing" in err_str:
+            import logging
+            _logger = logging.getLogger(__name__)
+            _logger.warning("[claude] Credit/billing limit — switching to Gemini")
+            try:
+                from utils import gemini_client
+                return gemini_client.ask_with_tools(
+                    messages=messages, tools=tools, system=system,
+                    model=model, max_tokens=max_tokens, retries=retries,
+                )
+            except Exception as gemini_err:
+                _logger.error(f"[claude] Gemini fallback ALSO failed: {gemini_err}", exc_info=True)
+                raise gemini_err
+        raise
+    except anthropic.RateLimitError:
+        # Rate limit (not billing) — retry with backoff then fall back
+        for attempt in range(retries - 1):
             time.sleep(2 ** attempt * 5)
-        except anthropic.APIStatusError as e:
-            if e.status_code >= 500 and attempt < retries - 1:
-                time.sleep(2 ** attempt * 2)
-            else:
+            try:
+                return _get_client().messages.create(**kwargs)
+            except anthropic.RateLimitError:
+                continue
+            except (anthropic.BadRequestError, anthropic.AuthenticationError) as e2:
+                err_str2 = str(e2).lower()
+                if "credit balance" in err_str2 or "usage limits" in err_str2:
+                    from utils import gemini_client
+                    return gemini_client.ask_with_tools(
+                        messages=messages, tools=tools, system=system,
+                        model=model, max_tokens=max_tokens, retries=retries,
+                    )
                 raise
-    raise RuntimeError(f"Claude call failed after {retries} retries")
+        # All retries exhausted — fall back to Gemini
+        import logging
+        logging.getLogger(__name__).warning("[claude] Rate limit exhausted — falling back to Gemini")
+        from utils import gemini_client
+        return gemini_client.ask_with_tools(
+            messages=messages, tools=tools, system=system,
+            model=model, max_tokens=max_tokens, retries=retries,
+        )
+    except anthropic.APIStatusError as e:
+        if e.status_code >= 500:
+            from utils import gemini_client
+            return gemini_client.ask_with_tools(
+                messages=messages, tools=tools, system=system,
+                model=model, max_tokens=max_tokens, retries=retries,
+            )
+        raise

@@ -1,5 +1,5 @@
 """
-smoke_test.py — Validates the full MMT-OS stack without a UAT run.
+smoke_test.py — Validates the full Prism stack without a UAT run.
 
 Tests in order:
   1. Config loads correctly
@@ -10,7 +10,7 @@ Tests in order:
   6. Can read UI tree
   7. MCP server imports cleanly
 
-Run from MMT-OS root:
+Run from Prism root:
   .venv/bin/python3 smoke_test.py
 """
 import sys
@@ -34,7 +34,7 @@ def check(name, fn):
         print(f"  {FAIL} {name}: {e}")
         results.append(False)
 
-print("\n=== MMT-OS Smoke Test ===\n")
+print("\n=== Prism Smoke Test ===\n")
 
 # 1. Config
 print("[1/7] Config")

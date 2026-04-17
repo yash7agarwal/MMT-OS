@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="MMT-OS Phase 2 — Multi-agent UAT runner",
+        description="Prism Phase 2 — Multi-agent UAT runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -132,7 +132,7 @@ def main() -> None:
     accounts = _load_accounts(args.accounts)
 
     logger.info("=" * 60)
-    logger.info("MMT-OS Phase 2 — UAT Run")
+    logger.info("Prism Phase 2 — UAT Run")
     logger.info(f"  Feature   : {args.feature}")
     logger.info(f"  Candidate : {args.candidate}")
     logger.info(f"  Baseline  : {args.baseline or '(none)'}")

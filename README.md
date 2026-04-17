@@ -1,6 +1,21 @@
-# Prism · v0.8.0
+<p align="center">
+  <img src="assets/banner.png" alt="Prism — See your product from every angle" width="100%" />
+</p>
 
-> Product intelligence platform — test your app, track competitors, research your industry, all in one place.
+<p align="center">
+  <strong>Product intelligence platform for product teams</strong>
+  <br />
+  <em>Track competitors, research your industry, map UX flows, run UAT — all in one place</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/version-0.8.0-10b981?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python" />
+  <img src="https://img.shields.io/badge/Next.js-14-000000?style=flat-square&logo=next.js" alt="Next.js" />
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" />
+</p>
+
+---
 
 Prism is a product operating system for PMs. It combines automated UAT testing with autonomous competitive intelligence agents that research your market while you sleep. Drop in your app, describe your product, and Prism discovers competitors, profiles their features and pricing, tracks industry trends, maps UX flows, and generates evidence-backed intelligence reports — all with source URLs.
 
@@ -90,8 +105,8 @@ memory/                         # Compounding intelligence logs
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/yash7agarwal/MMT-OS.git
-cd MMT-OS
+git clone https://github.com/yash7agarwal/MMT-OS.git prism
+cd prism
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cd webapp/web && npm install && cd ../..

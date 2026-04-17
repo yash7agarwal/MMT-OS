@@ -1,5 +1,5 @@
 """
-telegram_bot/bot.py — Telegram bot interface for MMT-OS UAT automation
+telegram_bot/bot.py — Telegram bot interface for Prism UAT automation
 
 Commands:
     /start   — welcome message + list commands
@@ -552,7 +552,7 @@ _TELEGRAM_DOWNLOAD_LIMIT_BYTES = 20 * 1024 * 1024  # 20 MB
 
 
 # ---------------------------------------------------------------------------
-# AppUAT photo upload — forward Telegram photos to webapp screen-mapping API
+# Prism photo upload — forward Telegram photos to webapp screen-mapping API
 # ---------------------------------------------------------------------------
 
 import httpx
@@ -587,7 +587,7 @@ def _set_active_project(chat_id: int, project_id: int) -> None:
 
 
 async def cmd_appuat_projects(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List AppUAT projects from the webapp."""
+    """List Prism projects from the webapp."""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             r = await client.get(f"{_APPUAT_API}/api/projects")
@@ -595,7 +595,7 @@ async def cmd_appuat_projects(update: Update, context: ContextTypes.DEFAULT_TYPE
             projects = r.json()
     except Exception as exc:
         await update.message.reply_text(
-            f"Couldn't reach AppUAT API at {_APPUAT_API}: {exc}\n\n"
+            f"Couldn't reach Prism API at {_APPUAT_API}: {exc}\n\n"
             f"Make sure the backend is running."
         )
         return
@@ -607,7 +607,7 @@ async def cmd_appuat_projects(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     active = _get_active_project(update.effective_chat.id)
-    lines = ["*Your AppUAT projects:*", ""]
+    lines = ["*Your Prism projects:*", ""]
     for p in projects:
         marker = " ← active" if p["id"] == active else ""
         lines.append(f"`{p['id']}` *{p['name']}*{marker}")
@@ -642,7 +642,7 @@ async def cmd_appuat_setproject(update: Update, context: ContextTypes.DEFAULT_TY
             r.raise_for_status()
             project = r.json()
     except Exception as exc:
-        await update.message.reply_text(f"Couldn't reach AppUAT API: {exc}")
+        await update.message.reply_text(f"Couldn't reach Prism API: {exc}")
         return
 
     _set_active_project(update.effective_chat.id, pid)
@@ -812,7 +812,7 @@ async def cmd_appuat_uat_suite(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Receive a photo from Telegram and upload it to the active AppUAT project."""
+    """Receive a photo from Telegram and upload it to the active Prism project."""
     if not update.message or not update.message.photo:
         return
 
@@ -1521,7 +1521,7 @@ def main() -> None:
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("cases", cmd_cases))
-    # AppUAT screen mapping commands
+    # Prism screen mapping commands
     app.add_handler(CommandHandler("projects", cmd_appuat_projects))
     app.add_handler(CommandHandler("setproject", cmd_appuat_setproject))
     app.add_handler(CommandHandler("uat", cmd_appuat_uat))
@@ -1529,7 +1529,7 @@ def main() -> None:
     # Product OS intelligence commands
     app.add_handler(CommandHandler("new", cmd_new))
     app.add_handler(CommandHandler("intel", cmd_intel))
-    # Photo handler — uploads to active AppUAT project
+    # Photo handler — uploads to active Prism project
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     # Must be registered AFTER document handler so APK uploads are handled first

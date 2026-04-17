@@ -1,4 +1,4 @@
-"""AppUAT FastAPI backend.
+"""Prism FastAPI backend.
 
 Run from repo root:
     .venv/bin/python3 -m uvicorn webapp.api.main:app --reload --port 8000
@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 
 app = FastAPI(
-    title="AppUAT API",
+    title="Prism API",
     description="Generic UAT planning tool — map any app, generate test plans",
     version="0.1.0",
 )
@@ -56,7 +56,7 @@ app.include_router(product_os.router)
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
-    logging.getLogger(__name__).info("AppUAT API started — DB initialized")
+    logging.getLogger(__name__).info("Prism API started — DB initialized")
 
 
 @app.get("/api/health")

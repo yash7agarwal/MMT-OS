@@ -100,7 +100,9 @@ export default function IntelligencePage({ params }: { params: { id: string } })
     if (runningAgent && !hasActiveWork) {
       // Give it a moment — the work item might not be in_progress yet
       const timer = setTimeout(() => {
-        const stillActive = workItems.some(i => i.agent_type === runningAgent && i.status === 'in_progress')
+        const stillActive = runningAgent === 'all'
+          ? workItems.some(i => i.status === 'in_progress')
+          : workItems.some(i => i.agent_type === runningAgent && i.status === 'in_progress')
         if (!stillActive) setRunningAgent(null)
       }, 15000) // 15s grace period for the agent to start
       return () => clearTimeout(timer)
@@ -117,6 +119,18 @@ export default function IntelligencePage({ params }: { params: { id: string } })
       setTimeout(fetchAll, 12000)
     } catch {
       setRunningAgent(null) // Clear on error
+    }
+  }
+
+  const handleRunAll = async () => {
+    setRunningAgent('all')
+    try {
+      await api.runAllAgents(projectId)
+      setTimeout(fetchAll, 2000)
+      setTimeout(fetchAll, 5000)
+      setTimeout(fetchAll, 12000)
+    } catch {
+      setRunningAgent(null)
     }
   }
 
@@ -146,10 +160,23 @@ export default function IntelligencePage({ params }: { params: { id: string } })
 
   return (
     <div className="space-y-4">
-      {/* Page intro */}
-      <p className="text-sm text-zinc-500">
-        Each agent researches a different area. Click "Run" to start one — it will work in the background and you can watch progress here.
-      </p>
+      {/* Page intro + run all */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-zinc-500">
+          Each agent researches a different area. Run them individually or all at once — they work in parallel.
+        </p>
+        <button
+          onClick={handleRunAll}
+          disabled={runningAgent === 'all' || hasActiveWork}
+          className="shrink-0 inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+        >
+          {runningAgent === 'all' ? (
+            <><CircleNotch size={14} className="animate-spin" /> Starting...</>
+          ) : (
+            <><Lightning size={14} weight="fill" /> Run all agents</>
+          )}
+        </button>
+      </div>
 
       {/* Agent cards */}
       {AGENTS.map((agent) => {

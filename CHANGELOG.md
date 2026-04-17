@@ -2,6 +2,25 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] — 2026-04-18
+### Changed
+- Rebranded all source files from "MMT-OS" / "AppUAT" to "Prism" across 13 files (docstrings, comments, user-facing strings, FastAPI title, package.json name)
+- Added GitHub project banner (`assets/banner.png`) with prism icon, spectrum, feature pills
+- Added social preview image for GitHub cards
+- README updated with centered banner, shield badges (version, Python, Next.js, license)
+
+### Added
+- `POST /api/product-os/run-all` — runs competitive intel + industry research agents in parallel
+- "Run all agents" button on Intelligence page
+- Gemini tool-use support (`gemini_client.ask_with_tools`) with Anthropic-compatible response objects
+- Auto-fallback: when Claude hits credit/billing limits, agents seamlessly switch to Gemini
+- Gemini ARRAY type schema conversion (was causing 400 errors)
+
+### Fixed
+- `runningAgent` React state never cleared — caused permanent stale "Running" status in UI
+- Claude `ask()` now also falls back to Gemini on credit limit (not just `ask_with_tools`)
+- Gemini 400 errors now logged with response body for debugging
+
 ## [0.8.0] — 2026-04-18
 ### Added
 - **Multi-agent Product OS**: 3 autonomous agents (Competitive Intel, Industry Research, UX Intelligence) that self-direct research, build cumulative knowledge, and persist findings to a shared knowledge graph

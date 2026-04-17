@@ -1,4 +1,4 @@
-# DESIGN.md — AppUAT Design System
+# DESIGN.md — Prism Design System
 
 > Premium dark-mode design system for a QA/UAT testing platform.
 > Stack: Next.js 14, React 18, Tailwind CSS v3, TypeScript.

@@ -49,14 +49,11 @@ def run_agent(agent_type: str, project_id: int, db: Session = Depends(get_db)):
 
     orch = get_orchestrator(project_id)
 
-    # Run in background thread so the API responds immediately
-    result_holder = {"result": None, "error": None}
-
     def _run():
         try:
-            result_holder["result"] = orch.run_agent_session(agent_type)
-        except Exception as e:
-            result_holder["error"] = str(e)
+            orch.run_agent_session(agent_type)
+        except Exception:
+            pass
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
@@ -65,7 +62,34 @@ def run_agent(agent_type: str, project_id: int, db: Session = Depends(get_db)):
         "status": "started",
         "agent_type": agent_type,
         "project_id": project_id,
-        "message": f"Agent session started in background. Check /api/product-os/status for progress.",
+        "message": f"Agent session started in background.",
+    }
+
+
+@router.post("/run-all")
+def run_all_agents(project_id: int, db: Session = Depends(get_db)):
+    """Run all non-device agents in parallel."""
+    from agent.product_os_orchestrator import get_orchestrator
+
+    orch = get_orchestrator(project_id)
+    started = []
+
+    for agent_type in ["competitive_intel", "industry_research"]:
+        def _run(at=agent_type):
+            try:
+                orch.run_agent_session(at)
+            except Exception:
+                pass
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+        started.append(agent_type)
+
+    return {
+        "status": "started",
+        "agents": started,
+        "project_id": project_id,
+        "message": f"Running {', '.join(started)} in parallel.",
     }
 
 

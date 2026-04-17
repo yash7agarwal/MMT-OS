@@ -1,4 +1,4 @@
-"""Pure-Python graph analysis utilities for the AppUAT screen graph.
+"""Pure-Python graph analysis utilities for the Prism screen graph.
 
 Used by the deeplink_utility planner to find structural issues:
 - Orphan screens (no incoming edges) — possibly only reachable via deeplink

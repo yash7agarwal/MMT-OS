@@ -265,6 +265,8 @@ export const api = {
     request<any>(`/api/product-os/stop?project_id=${projectId}`, { method: 'POST' }),
   runAgent: (projectId: number, agentType: string) =>
     request<any>(`/api/product-os/run/${agentType}?project_id=${projectId}`, { method: 'POST' }),
+  runAllAgents: (projectId: number) =>
+    request<any>(`/api/product-os/run-all?project_id=${projectId}`, { method: 'POST' }),
   queryKnowledge: (projectId: number, question: string) =>
     request<QueryResponse>(`/api/product-os/query`, {
       method: 'POST',

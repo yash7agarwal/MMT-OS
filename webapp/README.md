@@ -1,4 +1,4 @@
-# AppUAT — Generic UAT Web App
+# Prism — Generic UAT Web App
 
 A web app any product manager can use to map an Android/iOS app's screens, infer the navigation flow, and (eventually) generate UAT test plans.
 
