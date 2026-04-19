@@ -12,7 +12,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
-    JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String, Text,
+    JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary,
+    String, Text, UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -114,6 +115,16 @@ class TestCase(Base):
 class KnowledgeEntity(Base):
     """A node in the knowledge graph — a company, app, feature, flow, etc."""
     __tablename__ = "knowledge_entities"
+    __table_args__ = (
+        # Atomic dedup: app treats canonical_name (lowercased name) as the
+        # dedup key. Enforce it at the DB level so races can't create dupes.
+        UniqueConstraint(
+            "project_id", "canonical_name",
+            name="uq_knowledge_entities_project_canonical",
+        ),
+        # Hot path: list_entities filters by (project_id, entity_type).
+        Index("ix_knowledge_entities_project_type", "project_id", "entity_type"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
@@ -143,6 +154,10 @@ class KnowledgeEntity(Base):
 class KnowledgeRelation(Base):
     """A directed edge between two knowledge entities."""
     __tablename__ = "knowledge_relations"
+    __table_args__ = (
+        Index("ix_knowledge_relations_from", "from_entity_id"),
+        Index("ix_knowledge_relations_to", "to_entity_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     from_entity_id: Mapped[int] = mapped_column(
@@ -160,6 +175,9 @@ class KnowledgeRelation(Base):
 class KnowledgeObservation(Base):
     """A time-stamped observation about a knowledge entity."""
     __tablename__ = "knowledge_observations"
+    __table_args__ = (
+        Index("ix_knowledge_observations_entity_type", "entity_id", "observation_type"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     entity_id: Mapped[int] = mapped_column(
@@ -184,6 +202,9 @@ class KnowledgeObservation(Base):
 class KnowledgeArtifact(Base):
     """A generated artifact such as a competitor profile or trend report."""
     __tablename__ = "knowledge_artifacts"
+    __table_args__ = (
+        Index("ix_knowledge_artifacts_project_type", "project_id", "artifact_type"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
@@ -199,6 +220,10 @@ class KnowledgeArtifact(Base):
 class KnowledgeScreenshot(Base):
     """A screenshot captured during competitive intel or flow mapping."""
     __tablename__ = "knowledge_screenshots"
+    __table_args__ = (
+        Index("ix_knowledge_screenshots_project", "project_id"),
+        Index("ix_knowledge_screenshots_entity", "entity_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     entity_id: Mapped[int | None] = mapped_column(
@@ -223,6 +248,10 @@ class KnowledgeScreenshot(Base):
 class WorkItem(Base):
     """A unit of work for an intelligence agent."""
     __tablename__ = "work_items"
+    __table_args__ = (
+        # Hot path: agent pending-work query filters by (agent_type, project_id, status).
+        Index("ix_work_items_agent_project_status", "agent_type", "project_id", "status"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
@@ -244,6 +273,9 @@ class WorkItem(Base):
 class AgentSession(Base):
     """Tracks a single agent execution session."""
     __tablename__ = "agent_sessions"
+    __table_args__ = (
+        Index("ix_agent_sessions_project_started", "project_id", "started_at"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))

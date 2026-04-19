@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from webapp.api.models import (
@@ -82,7 +83,27 @@ class KnowledgeStore:
             confidence=confidence,
         )
         self.db.add(entity)
-        self.db.commit()
+        try:
+            self.db.commit()
+        except IntegrityError:
+            # Another writer inserted the same (project_id, canonical_name)
+            # between our SELECT and INSERT. Roll back, re-fetch, return that row.
+            self.db.rollback()
+            winner = (
+                self.db.query(KnowledgeEntity)
+                .filter(
+                    KnowledgeEntity.project_id == self.project_id,
+                    KnowledgeEntity.canonical_name == canonical,
+                )
+                .first()
+            )
+            if winner is None:
+                # Extremely unlikely (unique conflict but row gone) — re-raise.
+                raise
+            logger.debug(
+                "Lost race inserting entity '%s'; returning winner id=%s", name, winner.id
+            )
+            return winner.id
         self.db.refresh(entity)
         logger.debug(f"Created entity {entity.id}: {name}")
         return entity.id
