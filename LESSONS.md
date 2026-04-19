@@ -2,7 +2,7 @@
 
 > A living document that captures every pivot, blocker, breakthrough, and lesson from building Prism. Updated every session. Read this to understand not just WHAT was built, but WHY every decision was made and what went wrong along the way.
 
-**Last updated:** 2026-04-18 (late evening session)
+**Last updated:** 2026-04-20 (Phase 1 research-architecture rework shipped as v0.11.0)
 
 ---
 
@@ -15,6 +15,9 @@
 | 2026-04-16 | v0.8.0 | **Pivot**: UAT tool → Product Intelligence OS with multi-agent system |
 | 2026-04-17 | v0.8.1 | Unified platform, "Prism" rebrand, Telegram /new command |
 | 2026-04-18 | v0.9.0 | Lenses, Impact Engine, Trends, Groq integration, efficiency rewrite |
+| 2026-04-19 | v0.10.0 | **Pivot**: UAT carved into sibling repo Loupe |
+| 2026-04-19 | v0.10.1–0.10.5 | DB hardening, cost telemetry, merged intel agent, quality review, digest push |
+| 2026-04-20 | v0.11.0 | **Pivot**: Hardcoded research seeds → typed brief + LLM-planned queries; Claude Sonnet becomes synthesis default |
 
 ---
 
@@ -364,6 +367,109 @@ A prism refracts light into a spectrum (see broadly). A loupe is the jeweler's m
 3. **Preserve history via `filter-repo`, don't copy-paste.** History is the only thing you can't recreate. Spend the extra hour.
 
 4. **Document tradeoffs the same day.** This chapter exists because the decision is fresh. Revisiting the "why" six months later without notes is how pivots get silently reversed.
+
+---
+
+## Chapter 8: The Compounding Research Architecture (v0.11.0 — April 20)
+
+### What happened
+
+While running intelligence on a newly-added project "Swiggy" (food delivery, project_id=3), the user reported that the trend cards were full of travel content: "Gen Z Travel Preferences", "Bleisure Travel", "Pet-Friendly Travel", "Solo Female Travel Safety". Eight travel-themed trends, all tagged to a food-delivery project, all written by the industry_research agent.
+
+### Why it happened — root cause, not symptom
+
+Initial reflex was "data leakage — probably a missing `project_id` filter on the trends query". It wasn't. The trends WERE correctly stored with `project_id=3`. The bug was upstream: `agent/efficient_researcher.py:170-179` hardcoded 6 of 8 trend-discovery search queries to travel domain terms:
+
+```python
+searches = [
+    f"{project_name} consumer behavior trends 2025 2026 new needs",
+    f"solo travel women safety pet friendly travel trends India 2025",   # hardcoded
+    f"Gen Z millennial travel preferences booking behavior 2025",         # hardcoded
+    f"bleisure workation micro-trip spontaneous booking trend 2025",      # hardcoded
+    ...
+]
+```
+
+The synthesis prompt (lines 219–222) also had travel-specific exemplars ("bleisure travelers need split-billing", "pet-friendly hotel searches +340%"). Every project, regardless of industry, ran these travel queries — so every project's trend section filled up with travel content.
+
+This was dormant from v0.8.0 (the multi-project moment) until v0.10.5 — Prism looked fine while only MakeMyTrip existed because travel queries were appropriate. Adding Swiggy surfaced the latent contamination.
+
+### What was done — the architectural rework, not a patch
+
+Rather than swap hardcoded travel seeds for generic `"{project} trends 2025"` templates (which would stop the leakage but gut quality — generic queries return SEO sludge), the whole research pipeline was rebuilt around a **typed research brief + LLM-planned queries + deterministic validator**.
+
+Five stages, 4 new modules, 1 schema migration:
+
+1. **`agent/research_brief.py`** — typed `ResearchBrief` dataclass built from `(project row, KG state, user signals)`. This is the *only* path project context takes downstream — no agent reads project metadata from anywhere else. Fields: name, description, app_package, known competitors, recent trends, starred canonicals, dismissed canonicals (+reasons), low-confidence entities, stale-trend canonicals. A stable `content_hash()` drives the planner cache.
+
+2. **`agent/query_planner.py`** — one Haiku call per `(project, brief_hash)` produces a structured plan (5–8 discovery + 3–5 deepening + 2–3 validation + 1–2 lateral queries). Plan persists as `KnowledgeArtifact(artifact_type='research_plan')` with a 24h TTL; same brief → cache hit, no re-planning. Tool-use enforces JSON shape. The 6h retrieval cadence stays; only the planning step caches.
+
+3. **`agent/synthesis_validator.py`** — deterministic, no-LLM check that every candidate observation's `source_url` is in the retrieval bundle. Drops hallucinated sources. Records drop counts + reasons to `quality_score_json`.
+
+4. **`agent/knowledge_store.py` — trigram normalized-name dedupe layer.** Added under the existing exact-canonical match: strips `.com`/`Inc`/`Ltd`, unicode-folds, compares trigram Jaccard. "Booking" vs "Booking.com Inc." (Jaccard = 1.0 after normalization) now converge on a single entity.
+
+5. **`telegram_bot/digest.py` + CallbackQueryHandler in `bot.py`** — after each `industry_research` session, posts one compact MarkdownV2 message per new high-confidence trend with inline `[👍 Keep] [✖ Dismiss] [⭐ Star]` buttons. Taps hit `POST /api/knowledge/entities/{id}/signal` and write `KnowledgeEntity.user_signal`. Optional dismiss reason captured as a text reply. Feedback reaches the next run via the brief's `dismissed_canonicals` list.
+
+Supporting schema changes (via idempotent ALTER TABLE in `db.init_db`, not Alembic):
+- `KnowledgeEntity.user_signal` (nullable enum: kept/dismissed/starred)
+- `KnowledgeEntity.dismissed_reason` (nullable text)
+- `AgentSession.quality_score_json` (nullable JSON — retrieval_yield, novelty_yield, validator counts, inferred_industries, plan_cached_ratio)
+
+### Tradeoff register
+
+**Decision 8.1: Typed `ResearchBrief` as the *only* path project context flows downstream.**
+- **Gained:** Cross-industry contamination is now architecturally impossible. If a field isn't on the brief, downstream stages have no way to ask about it. The planner's domain inference is grounded in `project.name + description + known entities`. Future additions (industry taxonomy, user personas) plug into one object.
+- **Lost:** An extra object to construct and keep in sync. Agent subclasses can no longer pass around random kwargs; everything must be threaded through the brief. Slight coupling — the brief builder now reads from `KnowledgeEntity`, `KnowledgeObservation`, and `Project` directly rather than letting agents curate their own context.
+- **Net:** Worth it and then some. The bug class that caused Swiggy-gets-travel-trends is gone at the compile level, not just this instance. The brief also becomes the natural feedback-loop carrier (user_signal → dismissed_canonicals → next brief → next plan).
+
+**Decision 8.2: LLM-planned queries via Haiku with 24h cache, not hardcoded seeds.**
+- **Gained:** Queries adapt to any domain without per-vertical curation. For Swiggy: "Swiggy Instamart vs Zepto vs Blinkit market share shifts 2024", "Swiggy gig worker strikes and Fairwork India 2024 report findings", "Impact of ONDC price transparency on Swiggy and Zomato dominance 2024". For MakeMyTrip: "MakeMyTrip MyBiz vs American Express GBT market share India SME travel", "UDAN 5.0 regional connectivity scheme impact on MakeMyTrip Tier 3 flight searches". Substantially more specific than the old static seeds. Scales to any project type.
+- **Lost:** One extra LLM call per brief change. At a 24h cache TTL and ~$0.001/plan on Haiku, this is ~$0.03/month per project — trivial, but not zero. Also: quality is now dependent on the planner model guessing the domain from name+description. If a project's description is vague, queries will be vague. Fails gracefully (falls back to name-based queries) but isn't magic.
+- **Net:** Right call. The alternative was maintaining a domain-pack taxonomy (travel, food, fintech, ...) — that's a continuous curation tax AND silently fails for any project outside the taxonomy. LLM-planned queries are the only option that scales.
+
+**Decision 8.3: Synthesis default flipped from Groq Llama 3.3 70B to Claude Sonnet 4.6.**
+- **Gained:** Higher factual fidelity at the stage where hallucination matters most. Sonnet is measurably better at "only claim what the retrieval bundle supports". Structured JSON output is more reliable. Cost/novelty tradeoffs can now be measured via `quality_score_json.novelty_yield`.
+- **Lost:** Real dollars. Groq was free (14,400 RPD). Sonnet is ~$0.003/synthesis call. At current volume (one industry_research session per project every 6h, ~4 calls/day/project, 3 projects), that's ~$1/month. Budget-conscious runs opt in via `PRISM_SYNTH_CHEAP=1` which restores Groq-first.
+- **Net:** Absolutely right for synthesis. The "compounding intelligence" claim is meaningless if the observations it compounds are hallucinated. The v0.9.1 decision to default to Groq was cost-optimal for *any* synthesis; it was wrong for *this* synthesis. One class of mistake on a Llama call poisons the KG for weeks. The explicit opt-out (`PRISM_SYNTH_CHEAP=1`) preserves the Groq path for bulk classification work where hallucination risk is lower.
+
+**Decision 8.4: Deterministic source-URL validator, not an LLM judge.**
+- **Gained:** The cheapest possible hallucination guardrail — zero LLM cost, zero latency, deterministic. Every candidate observation's `source_url` MUST be in the retrieval bundle or it gets dropped with a logged reason. In Swiggy's verification run, 1 of 5 candidates was rejected for citing a URL not in the bundle. No "hope the LLM self-corrects" — the URL either exists or it doesn't.
+- **Lost:** Only catches URL-level hallucination. The model could still fabricate a *number* inside an observation that's otherwise sourced. Catching that requires a separate LLM-judge pass (Phase 2 quality review) or embedding-based content similarity.
+- **Net:** This is the 80/20 — most hallucinations observed in v0.9–v0.10 were "the model invented a URL that looks plausible but doesn't exist in what we fetched." Killing that class of error for free is straightforward. Content-level hallucination is a separate (LLM-priced) project.
+
+**Decision 8.5: Trigram normalized-name dedupe, not embeddings, for Phase 1.**
+- **Gained:** No new infrastructure. Pure Python, unicode-fold + corporate-suffix strip + trigram Jaccard. At the ~200-entities-per-project scale, naive O(n) pairwise compare per insert is milliseconds. Catches the common class of dupes ("Booking" / "Booking.com" / "Booking, Inc.") with zero false positives in testing.
+- **Lost:** Misses semantic dupes that don't share trigrams — e.g. "The Booking App" vs "Booking.com" would stay separate. Those need embeddings (Phase 2 on the existing `KnowledgeEmbedding` table).
+- **Net:** Right-sized for Phase 1. Covers the empirically common dupe pattern. Embeddings are a meaningful stack addition (provider pick, cost, reindexing) — worth doing, not worth doing right now.
+
+**Decision 8.6: Telegram digest with Keep/Dismiss/Star buttons as the Phase 1 feedback surface, not a web UI.**
+- **Gained:** PM's phone is where they already triage. No "open app → navigate → project → trends tab → scroll → click". A notification hits the phone; one tap records the signal. Zero new tools. Extends an already-running bot. Dismissed trends feed back as negative examples in the next planner call — the compounding loop is literally running while the PM is on the subway.
+- **Lost:** Signal density is gated on the bot polling process running (`python -m telegram_bot.run_bot`). If the bot isn't up, buttons don't work — taps time out silently. Also: MarkdownV2 escaping is a sharp edge — a missed `.` in a URL produces a 400, which cost one iteration when the digest first ran (source URLs weren't escaped). Fixed, but the general fragility of MarkdownV2 is a footgun.
+- **Net:** Correct call and correct prioritization. The plan originally had this as Phase 2; `/friction-finder` flagged it as Phase 1-mandatory because without it, the feedback loop starves — the system can't compound if no one feeds it signal, and the web-only path has too much friction to collect dense signal.
+
+### What should the PM know
+
+1. Why trends look better now: the research queries are now generated *for* your project, *from* your project's description + what's already in the knowledge graph. They're not coming from a template that assumed travel. If you add "Jobs-OS" as a project tomorrow, its queries will be recruiting/ATS-native — not because anyone wrote a recruiting-domain pack, but because the planner reads your description.
+
+2. Why you'll get buttons on your phone: every time the industry_research agent produces a new high-confidence trend, it lands in Telegram with `[Keep] [Dismiss] [Star]`. Every tap shapes the next run. If you dismiss "BNPL in travel" for MMT, the next plan will not probe that angle. If you star "ONDC travel launch impact", next plan will deepen on it.
+
+3. Why the cost line moved: synthesis now uses Claude Sonnet instead of free Groq Llama. The correctness gain is immediate; the bill difference is ~$1/month at current scale. If you ever need to squeeze budget, set `PRISM_SYNTH_CHEAP=1` in `.env` to flip back.
+
+4. Why this wasn't a small fix: "Swiggy has travel trends" sounds like a one-line patch (swap the hardcoded queries). But the real problem was that *any* project could silently get any other industry's content because the pipeline had no enforced project-context boundary. Fixing only Swiggy would have left the same trap for the next project. What shipped in v0.11.0 makes that trap uninstantiable.
+
+### Key lessons
+
+1. **"Wrong data for the right project_id" is almost never a SQL filter bug.** When a project's output doesn't match its identity, the bug is upstream of storage — usually in the code that *generates* the content. Trust the FK; look at the prompt.
+
+2. **A bug fix at the symptom layer teaches the system nothing.** Swapping hardcoded travel queries for generic templates would have silenced the user while preserving the architectural hole. Fixing the hole is more work and the right work.
+
+3. **The feedback loop is load-bearing.** An autonomous agent without a user-signal channel doesn't compound — it just runs. Every decision about "how does the user tell the system what's good" is a first-order product decision, not a polish item.
+
+4. **Prompt caching is an optimization, not a correctness lever.** The plan originally included Claude prompt-caching on the brief system prompt. When Claude credits ran out mid-verification, the planner still had to work — via Gemini, which doesn't support prompt caching. Designing the fallback path to not depend on caching meant the system kept working. Caching was added back as a future optimization, not a must-have.
+
+5. **Schema migrations via idempotent ALTER TABLE beat Alembic for single-user apps.** This project has used `db.init_db()` lightweight migrations since v0.10.1 and added three more columns in v0.11.0 with zero ceremony. Alembic would have meant a new dev dependency, a `migrations/` dir, a `alembic upgrade head` in deployment, and human attention on each schema change. None of that pays off below ~10 engineers.
+
+6. **Side-wins matter — note them.** Two unrelated bugs surfaced while doing this work: (a) `datetime.utcnow()` was serialized without a `Z` suffix, causing all "last ran" timestamps to render 5.5h stale in IST (fixed by a `UTCDatetime` PlainSerializer in Pydantic); (b) `utils/gemini_client.ask_with_tools` schema converter flattened nested-object array items to STRING, silently corrupting any multi-field tool call (fixed by recursive schema conversion). Both were found *because* v0.11.0 was actively exercising the Gemini fallback and the timestamp rendering. Fixing them in the same release was free; deferring would have been a regression trap.
 
 ---
 
