@@ -33,16 +33,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_CONFIG: dict[str, dict[str, Any]] = {
-    "competitive_intel": {
+    # v0.10.3 — competitive_intel + industry_research merged into "intel".
+    # Budget is the sum of what the two had: 8 items / 900s per session.
+    # Direct-invocation API paths (/api/product-os/run/competitive_intel) still
+    # work via _create_agent dispatch.
+    "intel": {
         "interval_hours": 6,
-        "max_session_duration_s": 600,
-        "max_items_per_session": 5,
-        "requires_device": False,
-    },
-    "industry_research": {
-        "interval_hours": 12,
-        "max_session_duration_s": 300,
-        "max_items_per_session": 3,
+        "max_session_duration_s": 900,
+        "max_items_per_session": 8,
         "requires_device": False,
     },
     "ux_intel": {
@@ -148,6 +146,14 @@ class ProductOSOrchestrator:
 
         Returns the agent instance, or None if the module is not yet built.
         """
+        if agent_type == "intel":
+            try:
+                from agent.intel_agent import IntelAgent
+            except ImportError:
+                logger.warning("[orchestrator] IntelAgent not available")
+                return None
+            return IntelAgent(self.project_id, db)
+
         if agent_type == "competitive_intel":
             try:
                 from agent.competitive_intel_agent import CompetitiveIntelAgent

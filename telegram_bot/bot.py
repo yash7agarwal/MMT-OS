@@ -126,7 +126,7 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     sys.path.insert(0, str(_root))
                 from agent.product_os_orchestrator import get_orchestrator
                 orch = get_orchestrator(pid)
-                orch.run_agent_session("competitive_intel")
+                orch.run_agent_session("intel")
             except Exception as e:
                 logger.error(f"[bot] Auto-start agents failed for project {pid}: {e}")
 
@@ -285,7 +285,7 @@ async def _intel_run(update: Update, agent_type: str, context: ContextTypes.DEFA
         return
     agent_type = agent_type.strip()
     if not agent_type:
-        await update.message.reply_text("Usage: /intel run `<agent_type>`\nTypes: competitive_intel, industry_research, ux_intel", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("Usage: /intel run `<agent_type>`\nTypes: intel (default), impact_analysis, ux_intel, competitive_intel, industry_research", parse_mode=ParseMode.MARKDOWN)
         return
 
     await update.message.reply_text(f"Starting {agent_type} session for project {pid}...")

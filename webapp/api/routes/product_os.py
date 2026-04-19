@@ -74,7 +74,7 @@ def run_all_agents(project_id: int, db: Session = Depends(get_db)):
     orch = get_orchestrator(project_id)
     started = []
 
-    for agent_type in ["competitive_intel", "industry_research", "impact_analysis"]:
+    for agent_type in ["intel", "impact_analysis"]:
         def _run(at=agent_type):
             try:
                 orch.run_agent_session(at)

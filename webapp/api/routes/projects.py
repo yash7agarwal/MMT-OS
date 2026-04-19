@@ -34,7 +34,7 @@ def create_project(payload: schemas.ProjectCreate, db: Session = Depends(get_db)
 
         def _start_agents():
             orch = get_orchestrator(_project_id)
-            orch.run_agent_session("competitive_intel")
+            orch.run_agent_session("intel")
 
         threading.Thread(target=_start_agents, daemon=True).start()
 
