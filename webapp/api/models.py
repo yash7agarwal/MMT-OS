@@ -140,6 +140,12 @@ class KnowledgeEntity(Base):
     last_updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
+    # User-provided feedback signal: "kept" | "dismissed" | "starred". Drives the
+    # compounding loop — dismissed canonicals feed back as negative examples to
+    # the query planner; starred items get weighted up in the next research brief.
+    user_signal: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Optional "why" a user dismissed this entity (free-text, captured via UI or Telegram).
+    dismissed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     observations: Mapped[list["KnowledgeObservation"]] = relationship(
         back_populates="entity", cascade="all, delete-orphan"
@@ -323,6 +329,10 @@ class AgentSession(Base):
     knowledge_added: Mapped[int] = mapped_column(Integer, default=0)
     token_usage_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     session_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Deterministic quality metrics written at session end — retrieval_yield,
+    # novelty_yield, quantification_ratio, confidence_distribution, dropped_for_invalid_source.
+    # Powers regression detection and the planner feedback loop.
+    quality_score_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class KnowledgeEmbedding(Base):

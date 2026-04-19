@@ -27,7 +27,10 @@ from webapp.api.schemas import (
     WorkItemOut,
     AgentSessionOut,
     KnowledgeSummary,
+    EntitySignalIn,
 )
+
+VALID_SIGNALS = {"kept", "dismissed", "starred", "clear"}
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -113,6 +116,37 @@ def get_entity(entity_id: int, db: Session = Depends(get_db)):
         observations=[KnowledgeObservationOut.model_validate(o) for o in observations],
         relations=[KnowledgeRelationOut.model_validate(r) for r in relations],
     )
+
+
+@router.post("/entities/{entity_id}/signal", response_model=KnowledgeEntityOut)
+def set_entity_signal(
+    entity_id: int,
+    body: EntitySignalIn,
+    db: Session = Depends(get_db),
+):
+    """Set or clear the user-feedback signal on a knowledge entity.
+
+    Signals feed the compounding loop: dismissed canonicals become negative
+    examples in the next research brief; starred canonicals get weighted up.
+    Pass signal='clear' to remove a prior signal.
+    """
+    entity = db.get(KnowledgeEntity, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    if body.signal not in VALID_SIGNALS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"signal must be one of {sorted(VALID_SIGNALS)}",
+        )
+    if body.signal == "clear":
+        entity.user_signal = None
+        entity.dismissed_reason = None
+    else:
+        entity.user_signal = body.signal
+        entity.dismissed_reason = body.reason if body.signal == "dismissed" else None
+    db.commit()
+    db.refresh(entity)
+    return entity
 
 
 @router.get("/entities/{entity_id}/observations", response_model=list[KnowledgeObservationOut])
@@ -542,6 +576,9 @@ def get_trends_view(
             "description": t.description or "",
             "timeline": meta.get("timeline", "present"),
             "category": meta.get("category", "general"),
+            "user_signal": t.user_signal,
+            "dismissed_reason": t.dismissed_reason,
+            "confidence": t.confidence,
             "quantification": {
                 k: v for k, v in meta.items()
                 if k in ("market_size", "growth_rate", "search_volume", "traffic_volume", "revenue_impact", "user_demand")

@@ -109,35 +109,43 @@ def ask_with_tools(
     if model.startswith("claude"):
         model = DEFAULT_MODEL
 
-    # Convert Anthropic tool schemas → Gemini function declarations
+    # Convert Anthropic tool schemas → Gemini function declarations. Recursive so
+    # array-of-object and nested-object schemas survive the round-trip.
+    _TYPE_MAP = {
+        "string": "STRING", "integer": "INTEGER", "number": "NUMBER",
+        "boolean": "BOOLEAN", "object": "OBJECT", "array": "ARRAY",
+    }
+
+    def _convert_schema(pdef: dict) -> dict:
+        gtype = _TYPE_MAP.get(pdef.get("type", "string"), "STRING")
+        out: dict = {"type": gtype}
+        if "description" in pdef:
+            out["description"] = pdef["description"]
+        if "enum" in pdef:
+            out["enum"] = pdef["enum"]
+        if gtype == "ARRAY":
+            items_def = pdef.get("items", {"type": "string"})
+            out["items"] = _convert_schema(items_def)
+        elif gtype == "OBJECT":
+            sub_props: dict = {}
+            for sub_name, sub_def in pdef.get("properties", {}).items():
+                sub_props[sub_name] = _convert_schema(sub_def)
+            out["properties"] = sub_props
+            if pdef.get("required"):
+                out["required"] = list(pdef["required"])
+        return out
+
     gemini_tools = []
     for tool in tools:
-        props = {}
-        required = []
         schema = tool.get("input_schema", {})
-        for pname, pdef in schema.get("properties", {}).items():
-            gtype = {"string": "STRING", "integer": "INTEGER", "number": "NUMBER",
-                     "boolean": "BOOLEAN", "object": "OBJECT", "array": "ARRAY"
-                     }.get(pdef.get("type", "string"), "STRING")
-            prop: dict = {"type": gtype}
-            if "description" in pdef:
-                prop["description"] = pdef["description"]
-            # Gemini requires 'items' for ARRAY type
-            if gtype == "ARRAY":
-                items_def = pdef.get("items", {})
-                item_type = {"string": "STRING", "integer": "INTEGER", "number": "NUMBER",
-                             "boolean": "BOOLEAN"}.get(items_def.get("type", "string"), "STRING")
-                prop["items"] = {"type": item_type}
-            props[pname] = prop
-        for rname in schema.get("required", []):
-            required.append(rname)
+        params = _convert_schema({"type": "object", **schema})
+        # Root must be OBJECT; ensure it, even if input_schema lacks "type".
+        params["type"] = "OBJECT"
         decl: dict = {
             "name": tool["name"],
             "description": tool.get("description", ""),
-            "parameters": {"type": "OBJECT", "properties": props},
+            "parameters": params,
         }
-        if required:
-            decl["parameters"]["required"] = required
         gemini_tools.append(decl)
 
     # Convert Anthropic messages → Gemini contents

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -24,6 +26,61 @@ from webapp.api.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Normalized-name dedupe (Phase-1 semantic convergence)
+#
+# Catches duplicates like "Booking" vs "Booking.com" vs "Booking.Com Inc." by
+# stripping corporate suffixes + TLDs, unicode-folding, and comparing trigram
+# Jaccard similarity. Layered under the existing exact-canonical match: if
+# exact-match misses, we run normalized match; only if both miss do we insert.
+#
+# Phase-2 will add embedding cosine as a deeper layer; for now trigrams catch
+# the most common dupes cheaply with no new infra.
+# ---------------------------------------------------------------------------
+
+_CORP_SUFFIX_RE = re.compile(
+    r"\b("
+    r"inc|incorporated|corp|corporation|llc|ltd|limited|pvt|private|plc|"
+    r"gmbh|s\.a\.|s\.?r\.?l|co|company|group|holdings|holding|technologies|"
+    r"technology|tech"
+    r")\.?\b",
+    flags=re.IGNORECASE,
+)
+_TLD_RE = re.compile(r"\.(com|in|co|io|org|net|ai|app|gov|edu|xyz|dev)\b", re.IGNORECASE)
+_NON_ALNUM_RE = re.compile(r"[^0-9a-z ]+")
+_WS_RE = re.compile(r"\s+")
+
+DEDUPE_TRIGRAM_THRESHOLD = 0.9
+
+
+def _normalize_for_dedupe(name: str) -> str:
+    """Normalize a name for trigram similarity: lowercase, unicode-fold, strip
+    corporate suffixes + TLDs, collapse whitespace.
+    """
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKD", name)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower().strip()
+    s = _TLD_RE.sub("", s)
+    s = _CORP_SUFFIX_RE.sub("", s)
+    s = _NON_ALNUM_RE.sub(" ", s)
+    s = _WS_RE.sub(" ", s).strip()
+    return s
+
+
+def _trigrams(s: str) -> set[str]:
+    if len(s) < 3:
+        return {s} if s else set()
+    padded = f"  {s}  "
+    return {padded[i:i + 3] for i in range(len(padded) - 2)}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
 
 
 class KnowledgeStore:
@@ -46,7 +103,16 @@ class KnowledgeStore:
         metadata: dict | None = None,
         confidence: float = 1.0,
     ) -> int:
-        """Create or update a knowledge entity. Returns the entity id."""
+        """Create or update a knowledge entity. Returns the entity id.
+
+        Dedupe layers, cheapest first:
+          1. Exact canonical (lowercased name) match — DB-indexed.
+          2. Normalized-name trigram similarity ≥ DEDUPE_TRIGRAM_THRESHOLD
+             against entities of the same (project_id, entity_type).
+
+        If either layer hits, the existing entity is updated (merge metadata,
+        bump confidence+timestamp) and its id returned — no duplicate insert.
+        """
         canonical = name.lower().strip()
         existing = (
             self.db.query(KnowledgeEntity)
@@ -57,6 +123,39 @@ class KnowledgeStore:
             )
             .first()
         )
+
+        # Normalized-name match: catches "Booking" vs "Booking.com Inc."
+        if existing is None:
+            new_normalized = _normalize_for_dedupe(name)
+            if new_normalized and len(new_normalized) >= 3:
+                new_trigrams = _trigrams(new_normalized)
+                candidates = (
+                    self.db.query(KnowledgeEntity)
+                    .filter(
+                        KnowledgeEntity.project_id == self.project_id,
+                        KnowledgeEntity.entity_type == entity_type,
+                    )
+                    .all()
+                )
+                best_score = 0.0
+                best_match: KnowledgeEntity | None = None
+                for cand in candidates:
+                    cand_norm = _normalize_for_dedupe(cand.name)
+                    if not cand_norm:
+                        continue
+                    if cand_norm == new_normalized:
+                        best_score, best_match = 1.0, cand
+                        break
+                    score = _jaccard(new_trigrams, _trigrams(cand_norm))
+                    if score > best_score:
+                        best_score, best_match = score, cand
+                if best_match is not None and best_score >= DEDUPE_TRIGRAM_THRESHOLD:
+                    logger.info(
+                        "[knowledge_store] Normalized-name dedupe merged '%s' into "
+                        "existing id=%d name=%r (score=%.2f)",
+                        name, best_match.id, best_match.name, best_score,
+                    )
+                    existing = best_match
 
         if existing:
             if description is not None:

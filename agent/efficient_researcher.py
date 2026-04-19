@@ -1,18 +1,25 @@
 """Efficient research module — deterministic search + single LLM synthesis.
 
 Instead of 10-15 LLM calls per work item (tool-use loop), this module:
-1. Runs web searches deterministically (no LLM needed to decide what to search)
+1. Runs web searches from a planner-generated plan (not hardcoded seeds)
 2. Fetches and extracts content from top results (no LLM needed)
 3. Makes ONE LLM call to synthesize findings from the raw data
-4. Saves structured results to the knowledge graph
+4. Returns both synthesized candidates and the retrieval bundle so callers
+   can run the source_url validator before writing to the KG.
 
-Cost: 1-2 LLM calls per work item instead of 10-15.
-Provider: Groq (free Llama 3.1) > Claude > Gemini fallback chain.
+Synthesis provider priority (Phase 1 of the research-architecture rework):
+  Claude (Sonnet) — default, highest fidelity for synthesis
+  Groq (Llama)   — only if PRISM_SYNTH_CHEAP=1 in env (cheap-mode opt-in)
+  Gemini          — fallback when Claude is unavailable
+
+Rationale: synthesis is the stage where hallucination matters most; we no
+longer default to free-tier Llama here.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any
 
 from tools.web_research import WebResearcher
@@ -23,24 +30,30 @@ _web = WebResearcher()
 
 
 def _get_synthesizer():
-    """Get the best available synthesis function. Priority: Groq > Claude > Gemini."""
-    try:
-        from utils.groq_client import synthesize, is_available
-        if is_available():
-            logger.info("[researcher] Using Groq (free) for synthesis")
-            return synthesize
-    except ImportError:
-        pass
+    """Return the synthesis function per priority: Claude > Groq (if cheap mode) > Gemini.
+
+    Set PRISM_SYNTH_CHEAP=1 to prefer Groq first (budget-conscious runs).
+    """
+    cheap_mode = os.environ.get("PRISM_SYNTH_CHEAP", "").strip() in ("1", "true", "yes")
+
+    if cheap_mode:
+        try:
+            from utils.groq_client import synthesize, is_available
+            if is_available():
+                logger.info("[researcher] PRISM_SYNTH_CHEAP=1 — using Groq for synthesis")
+                return synthesize
+        except ImportError:
+            pass
 
     try:
         from utils.claude_client import ask
-        logger.info("[researcher] Using Claude for synthesis")
+        logger.info("[researcher] Using Claude for synthesis (default)")
         return ask
     except Exception:
         pass
 
     from utils.gemini_client import ask
-    logger.info("[researcher] Using Gemini for synthesis")
+    logger.info("[researcher] Using Gemini for synthesis (Claude unavailable)")
     return ask
 
 
@@ -155,32 +168,34 @@ Rules:
 
 
 def research_industry_trends(
-    project_name: str,
-    project_description: str,
-    known_trends: list[str] | None = None,
+    brief: "ResearchBrief",  # noqa: F821 — forward ref, imported lazily below
+    plan: "ResearchPlan",    # noqa: F821
 ) -> dict:
-    """Research consumer behavior trends, niche segments, and emerging needs.
+    """Research consumer-behavior trends, niche segments, and emerging needs.
 
-    Focuses on JTBD (Jobs To Be Done), underserved segments, and behavioral
-    shifts — NOT macro industry facts that everyone already knows.
+    Driven by a planner-generated ResearchPlan — no hardcoded domain seeds.
+    The brief provides project identity + feedback signal; the plan provides
+    the query set (discovery + deepening + validation + lateral).
+
+    Returns:
+        {
+            "trends": list[dict],          # synthesized candidates; each carries a source_url
+            "retrieval_bundle": list[dict], # {url, title, content} for validator input
+            "inferred_industry": str,
+        }
+    Callers MUST pass the returned `retrieval_bundle` to
+    `agent.synthesis_validator.validate_candidates` before writing to the KG.
     """
+    # Lazy imports to avoid circulars at module import time.
+    from agent.research_brief import ResearchBrief  # noqa: F401
+    from agent.query_planner import ResearchPlan  # noqa: F401
+
     synthesize = _get_synthesizer()
 
-    # Searches targeted at CONSUMER BEHAVIOR and NICHE SEGMENTS, not macro facts
-    searches = [
-        f"{project_name} consumer behavior trends 2025 2026 new needs",
-        f"solo travel women safety pet friendly travel trends India 2025",
-        f"Gen Z millennial travel preferences booking behavior 2025",
-        f"bleisure workation micro-trip spontaneous booking trend 2025",
-        f"sustainable travel eco tourism accessibility travel trend",
-        f"BNPL travel buy now pay later subscription travel 2025",
-        f"voice search travel booking AI concierge personalization",
-        f"{project_name} unmet customer needs complaints gaps",
-    ]
-
-    raw_data = []
-    for query in searches:
-        results = _web.search(query, max_results=3)
+    # Deterministic retrieval over the planner's queries — no hardcoded seeds.
+    raw_data: list[dict[str, Any]] = []
+    for pq in plan.queries:
+        results = _web.search(pq.query, max_results=3)
         for r in results[:2]:
             page = _web.fetch_page(r.get("url", ""), max_length=4000)
             if page.get("content") and len(page["content"]) > 100:
@@ -188,58 +203,96 @@ def research_industry_trends(
                     "url": r.get("url", ""),
                     "title": r.get("title", ""),
                     "content": page["content"][:2500],
+                    "query": pq.query,
+                    "query_kind": pq.kind,
                 })
 
     if not raw_data:
-        return {"trends": []}
+        return {
+            "trends": [],
+            "retrieval_bundle": [],
+            "inferred_industry": plan.inferred_industry,
+        }
+
+    # Cap the synthesis context to avoid exploding the LLM input — pick highest-
+    # value sources (deepening/validation first, then discovery, then lateral).
+    _kind_priority = {"deepening": 0, "validation": 1, "discovery": 2, "lateral": 3}
+    raw_data.sort(key=lambda d: _kind_priority.get(d.get("query_kind", "discovery"), 2))
+    capped = raw_data[:10]
 
     raw_text = "\n\n---\n\n".join([
         f"Source: {d['url']}\nTitle: {d['title']}\n{d['content']}"
-        for d in raw_data[:8]
+        for d in capped
     ])
 
-    known = f"\nAlready known (skip these): {', '.join(known_trends)}" if known_trends else ""
+    known_block = ""
+    if brief.recent_trends:
+        known_block = (
+            "\nAlready tracked (do not re-emit these names — but a NEW observation "
+            "about one of them IS welcome if you have fresh evidence):\n- "
+            + "\n- ".join(t.name for t in brief.recent_trends[:20])
+        )
+    dismissed_block = ""
+    if brief.dismissed_canonicals:
+        dismissed_block = (
+            "\nPreviously DISMISSED by the user (avoid this pattern):\n- "
+            + "\n- ".join(brief.dismissed_canonicals[:20])
+        )
 
-    synthesis_prompt = f"""You are a consumer insights researcher for {project_name}.
-{project_description}
-{known}
+    synthesis_prompt = f"""You are a consumer insights researcher for {brief.project_name}.
 
-RAW DATA:
+SUBJECT DESCRIPTION:
+{brief.project_description or '(no description)'}
+
+INFERRED INDUSTRY: {plan.inferred_industry or 'unknown'}
+{known_block}
+{dismissed_block}
+
+RAW DATA (pulled against the research plan for this subject):
 {raw_text}
 
-Your job: identify NICHE CONSUMER TRENDS that reveal new product opportunities.
+Your job: identify NICHE CONSUMER TRENDS **specific to {brief.project_name}'s domain**
+({plan.inferred_industry}) that reveal new product opportunities.
 
 DO NOT extract:
-- "Travel market is growing" — everyone knows this
-- "Mobile bookings increasing" — obvious
-- "AI is transforming travel" — too broad
-- Generic industry size/growth numbers
+- Generic "market is growing" / size / growth claims
+- Obvious moves everyone knows
+- Trends that belong to OTHER industries (if the subject is a food-delivery
+  app, do not emit travel trends; if the subject is fintech, do not emit
+  hospitality trends, etc.) — cross-industry leakage is a bug.
 
 DO extract:
-- Specific underserved segments with unmet needs (e.g., "Women solo travelers need verified safe stays — 78% cite safety as top concern per Booking.com 2025 survey")
-- Behavioral shifts that create new JTBD (e.g., "Bleisure travelers need split-billing between personal and corporate cards — no OTA supports this natively")
-- Emerging categories with quantified demand (e.g., "Pet-friendly hotel searches up 340% YoY on Google India, but only 2% of OTA listings are pet-tagged")
-- Regulatory changes creating new needs (e.g., "New GST rules for hotel aggregators effective Jan 2026 require room-level tax breakdowns at checkout")
+- Specific underserved segments with unmet needs
+- Behavioral shifts that create new JTBD (Jobs To Be Done)
+- Emerging categories with quantified demand
+- Regulatory / platform / infrastructure changes creating new needs
+- Named product-strategy moves by competitors that reveal a gap
 
 For each trend, provide:
-- "name": specific name (NOT "Growing travel market")
-- "description": 3-4 sentences explaining the consumer need, why it's underserved, and what a product could do about it
-- "timeline": "past" (happened) | "present" (happening now) | "emerging" (early signals) | "future" (predicted)
+- "name": specific, named pattern (not a vague phrase)
+- "description": 3-4 sentences — the consumer need, why it's underserved, what a product could do
+- "timeline": "past" | "present" | "emerging" | "future"
 - "category": "consumer_behavior" | "technology" | "regulation" | "demographics" | "market_structure"
-- "quantification": {{"search_volume": "X/mo", "market_size": "$X", "growth_rate": "X%", "user_demand": "X% cite this"}} — include whatever data exists
-- "jtbd": what job is the customer trying to get done?
-- "product_opportunity": what could {project_name} build to address this?
-- "source_url": from the raw data
+- "quantification": {{"search_volume": "...", "market_size": "...", "growth_rate": "...", "user_demand": "..."}} — include only figures actually present in the raw data; omit keys without evidence
+- "jtbd": the job the customer is trying to get done
+- "product_opportunity": what {brief.project_name} could build
+- "source_url": a URL from the raw data above (MANDATORY — candidates without a valid source_url will be rejected)
 
 Return JSON: {{"trends": [...]}}
 
-Extract 6-10 trends. Every trend must be SPECIFIC and ACTIONABLE — a PM should read it and immediately see a product opportunity."""
+Extract 5-10 trends. Every trend must be SPECIFIC, domain-relevant, and ACTIONABLE."""
 
     try:
         response = synthesize(
             synthesis_prompt,
             max_tokens=4096,
-            system="You are a consumer insights researcher. Extract specific, niche, actionable consumer trends — NOT obvious industry facts. Return valid JSON only.\n\nCRITICAL: Do NOT invent facts, numbers, or percentages not present in the raw data. If data is unavailable, say 'data not available'. Every claim must cite which source it came from. Fabricating data is strictly prohibited.",
+            system=(
+                "You are a consumer insights researcher. Extract specific, niche, "
+                "actionable consumer trends — NOT obvious industry facts. Return valid JSON only.\n\n"
+                "CRITICAL: Do NOT invent facts, numbers, percentages, or URLs not present in the raw data. "
+                "Every claim must cite which source URL it came from, and that URL MUST appear in the raw data above. "
+                "If data is unavailable, omit the claim. Fabrication is a hard failure."
+            ),
         )
 
         text = response.strip()
@@ -249,11 +302,20 @@ Extract 6-10 trends. Every trend must be SPECIFIC and ACTIONABLE — a PM should
                 text = text[4:]
             text = text.strip()
 
-        return json.loads(text)
+        parsed = json.loads(text)
+        return {
+            "trends": parsed.get("trends", []),
+            "retrieval_bundle": capped,
+            "inferred_industry": plan.inferred_industry,
+        }
 
     except (json.JSONDecodeError, Exception) as e:
-        logger.error(f"[researcher] Trend synthesis failed: {e}")
-        return {"trends": []}
+        logger.error("[researcher] Trend synthesis failed: %s", e)
+        return {
+            "trends": [],
+            "retrieval_bundle": capped,
+            "inferred_industry": plan.inferred_industry,
+        }
 
 
 def research_impact_cascade(

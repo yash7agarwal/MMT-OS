@@ -22,8 +22,11 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 load_dotenv()
@@ -441,6 +444,100 @@ async def _intel_digest(update: Update) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Research-digest callbacks (F1 — keep/dismiss/star buttons)
+# ---------------------------------------------------------------------------
+#
+# Buttons are attached by telegram_bot/digest.py with callback_data of the
+# form `sig:<signal>:<entity_id>`. When tapped, we POST to the FastAPI
+# endpoint so the same server-side validation path runs.
+#
+# Dismiss can optionally collect a "why" — after ✖, we store the pending
+# entity_id in context.user_data and the next plain text reply is written
+# to dismissed_reason.
+
+_VALID_SIGNALS = {"kept", "dismissed", "starred"}
+
+
+def _api_base() -> str:
+    return os.environ.get("PRISM_API_URL", "http://localhost:8100").rstrip("/")
+
+
+async def cb_signal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle Keep/Dismiss/Star taps from a digest message."""
+    import httpx
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+    await query.answer()  # acknowledge so the spinner goes away
+
+    try:
+        _, signal, entity_id_s = query.data.split(":", 2)
+        entity_id = int(entity_id_s)
+    except (ValueError, AttributeError):
+        return
+    if signal not in _VALID_SIGNALS:
+        return
+
+    url = f"{_api_base()}/api/knowledge/entities/{entity_id}/signal"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, json={"signal": signal})
+        ok = resp.status_code == 200
+    except Exception as exc:
+        logger.warning("[bot] signal POST failed for entity=%d: %s", entity_id, exc)
+        ok = False
+
+    suffix = {"kept": "👍 Kept", "dismissed": "✖ Dismissed", "starred": "⭐ Starred"}[signal]
+    status_line = suffix if ok else f"⚠️ {suffix} (save failed — check server)"
+
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    try:
+        await query.message.reply_text(status_line)
+    except Exception:
+        pass
+
+    if signal == "dismissed" and ok:
+        # Ask for a brief "why" — next plain text becomes dismissed_reason.
+        context.user_data["awaiting_dismiss_reason"] = entity_id
+        try:
+            await query.message.reply_text(
+                "Dismissed. Reply with a one-line reason if you want "
+                "(e.g. 'wrong industry' / 'we already know this'), "
+                "or ignore to skip."
+            )
+        except Exception:
+            pass
+
+
+async def on_text_reply(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Capture an optional dismiss-reason reply right after a Dismiss tap."""
+    import httpx
+    pending = context.user_data.get("awaiting_dismiss_reason")
+    if not pending:
+        return  # unrelated text — ignore (avoids swallowing other flows)
+    if update.message is None or not (update.message.text or "").strip():
+        return
+    reason = update.message.text.strip()[:500]
+
+    # Re-post `dismissed` with the reason attached.
+    url = f"{_api_base()}/api/knowledge/entities/{pending}/signal"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            await client.post(url, json={"signal": "dismissed", "reason": reason})
+    except Exception as exc:
+        logger.warning("[bot] dismiss-reason POST failed for entity=%d: %s", pending, exc)
+
+    context.user_data.pop("awaiting_dismiss_reason", None)
+    try:
+        await update.message.reply_text("📝 Reason saved — it'll shape the next research run.")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -462,6 +559,9 @@ def main() -> None:
     # Product OS intelligence commands
     app.add_handler(CommandHandler("new", cmd_new))
     app.add_handler(CommandHandler("intel", cmd_intel))
+    # Research-digest buttons + optional reason replies
+    app.add_handler(CallbackQueryHandler(cb_signal, pattern=r"^sig:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_reply))
 
     logger.info("[bot] Starting polling...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

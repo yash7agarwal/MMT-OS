@@ -464,22 +464,64 @@ Return ONLY the JSON array, no other text."""
 
         context = item.context_json or {}
 
-        # Use efficient researcher for trend discovery
+        # Use efficient researcher for trend discovery. Phase-1 research pipeline:
+        # build a typed brief → plan queries with Haiku → retrieve → synthesize
+        # → validate source_urls → write. Quality metrics accumulate on
+        # self._current_result["quality"] for base_autonomous_agent to persist.
         if item.category in ("trend_analysis", "niche_trend_discovery"):
             from agent.efficient_researcher import research_industry_trends
-            known = [e["name"] for e in self.knowledge.find_entities(entity_type="trend")]
-            result = research_industry_trends(self.project_name, self.project_description, known)
+            from agent.query_planner import get_or_generate_plan
+            from agent.research_brief import build_brief
+            from agent.synthesis_validator import validate_candidates
 
-            for trend in result.get("trends", []):
+            brief = build_brief(self.db, self.project_id)
+            plan = get_or_generate_plan(self.db, brief)
+            result = research_industry_trends(brief, plan)
+
+            candidates = [
+                {**t, "canonical_name": (t.get("name") or "").lower().strip()}
+                for t in result.get("trends", [])
+            ]
+            kept, report = validate_candidates(candidates, result.get("retrieval_bundle", []))
+
+            quality = self._current_result.setdefault("quality", {})
+            quality.setdefault("validator", []).append(report.as_dict())
+            quality["inferred_industry"] = plan.inferred_industry
+            quality["plan_cached"] = plan.cached
+            quality["plan_queries"] = len(plan.queries)
+
+            pre_existing_trends = {
+                e["canonical_name"] for e in self.knowledge.find_entities(entity_type="trend")
+                if e.get("canonical_name")
+            }
+            novel_count = 0
+            for trend in kept:
                 meta = {"timeline": trend.get("timeline", "present"), "category": trend.get("category", "general")}
-                meta.update(trend.get("quantification", {}))
-                eid = self.knowledge.upsert_entity("trend", trend["name"], trend.get("description", ""), metadata=meta)
-                if trend.get("source_url"):
-                    self.knowledge.add_observation(eid, "general", trend.get("description", ""), source_url=trend.get("source_url"), lens_tags=["growth"])
+                meta.update(trend.get("quantification") or {})
+                canonical = trend.get("canonical_name") or (trend.get("name") or "").lower().strip()
+                if canonical and canonical not in pre_existing_trends:
+                    novel_count += 1
+                eid = self.knowledge.upsert_entity(
+                    "trend", trend["name"], trend.get("description", ""), metadata=meta,
+                )
+                self.knowledge.add_observation(
+                    eid, "general", trend.get("description", ""),
+                    source_url=trend["source_url"],  # validator guarantees this exists
+                    lens_tags=["growth"],
+                )
                 self._current_result["entities_created"] = self._current_result.get("entities_created", 0) + 1
 
+            quality["retrieval_yield"] = (
+                sum(1 for _ in result.get("retrieval_bundle", [])) / max(len(plan.queries), 1)
+            )
+            quality["novelty_yield"] = novel_count / max(len(kept), 1) if kept else 0.0
+
             self._current_result["status"] = "completed"
-            self._current_result["summary"] = f"Discovered {len(result.get('trends', []))} trends"
+            self._current_result["summary"] = (
+                f"[{plan.inferred_industry}] {len(kept)} trends kept, "
+                f"{report.total_in - report.total_out} dropped, "
+                f"{novel_count} novel; plan_cached={plan.cached}"
+            )
             return self._current_result
 
         # For all other categories, use search + synthesize (1 LLM call via Groq)
@@ -735,25 +777,29 @@ Return ONLY the JSON array, no other text."""
             known_trends = self.knowledge.find_entities(entity_type="trend")
             known_names = [t["name"] for t in known_trends]
             return (
-                f"Discover NICHE and EMERGING trends in the {self.project_name} industry "
-                f"that most companies haven't fully addressed yet.\n\n"
+                f"Discover NICHE and EMERGING trends in {self.project_name}'s domain "
+                f"that most companies haven't fully addressed yet. Infer the domain "
+                f"from the project description — do NOT assume a specific industry.\n\n"
+                f"Project description: {self.project_description or '(none)'}\n"
                 f"Already known trends: {', '.join(known_names) if known_names else 'none'}\n\n"
-                f"Think about underserved segments and future shifts:\n"
-                f"- DEMOGRAPHIC shifts (solo travelers, pet owners, elderly, Gen Z, women safety)\n"
-                f"- BEHAVIORAL changes (bleisure travel, workations, micro-trips, spontaneous booking)\n"
-                f"- TECHNOLOGY-driven (voice search booking, AR previews, AI concierge, blockchain loyalty)\n"
-                f"- SUSTAINABILITY (carbon-neutral travel, eco-lodging, slow travel)\n"
-                f"- ACCESSIBILITY (differently-abled travel, language barriers, rural connectivity)\n"
-                f"- ECONOMIC (budget micro-travel, BNPL for travel, subscription travel)\n\n"
+                f"Think about underserved segments and future shifts *specific to this "
+                f"subject's actual industry* across these lens families:\n"
+                f"- DEMOGRAPHIC shifts (underserved user cohorts within this domain)\n"
+                f"- BEHAVIORAL changes (new JTBD or usage patterns in this domain)\n"
+                f"- TECHNOLOGY-driven (new capabilities changing this domain's unit economics)\n"
+                f"- REGULATORY (policy or compliance shifts affecting this domain)\n"
+                f"- PLATFORM / INFRASTRUCTURE (distribution, payment, identity shifts)\n"
+                f"- ECONOMIC (business-model pivots, pricing innovations in this domain)\n\n"
+                f"Forbidden: trends from OTHER industries. If this subject is not a travel "
+                f"company, do not emit travel trends. Cross-industry leakage is a known bug.\n\n"
                 f"For each trend discovered:\n"
-                f"1. Use save_finding with observation_type='general' and include in the content:\n"
-                f"   - What the trend is and why it matters\n"
-                f"   - Where it sits on the timeline (past/present/emerging/future)\n"
-                f"   - Which category it falls under (consumer_behavior/technology/regulation/demographics/market_structure)\n"
-                f"2. Try to quantify: search volume, market size, growth rate\n"
+                f"1. Use save_finding with observation_type='general'. Include in the content:\n"
+                f"   - What the trend is and why it matters for THIS subject's domain\n"
+                f"   - Timeline (past/present/emerging/future)\n"
+                f"   - Category (consumer_behavior/technology/regulation/demographics/market_structure)\n"
+                f"2. Quantify: search volume, market size, growth rate — only with cited numbers\n"
                 f"3. Tag with relevant lenses\n\n"
-                f"For the entity name, use the trend name (e.g., 'Women-friendly travel').\n"
-                f"Set entity_type metadata via save_finding for entity_name matching a trend entity.\n"
+                f"Source URL mandatory for every finding.\n"
                 f"Target: 5-8 niche trends. Call finish_work when done."
             )
 

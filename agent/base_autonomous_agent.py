@@ -94,6 +94,9 @@ class AutonomousAgent(ABC):
         """
         self._session_start = time.monotonic()
         self._token_usage = {"input_tokens": 0, "output_tokens": 0}
+        # Per-session quality rollup — work items can append a `quality` dict to
+        # their result; we aggregate these at session close into quality_score_json.
+        self._quality_rollup: list[dict] = []
 
         # Create session record
         session = AgentSession(
@@ -221,6 +224,8 @@ class AutonomousAgent(ABC):
                 items_completed += 1
                 knowledge_added += result.get("entities_created", 0)
                 knowledge_added += result.get("observations_added", 0)
+                if isinstance(result.get("quality"), dict):
+                    self._quality_rollup.append(result["quality"])
             except Exception as e:
                 logger.error(
                     f"[{self.agent_type}] Work item {item.id} failed: {e}",
@@ -256,7 +261,17 @@ class AutonomousAgent(ABC):
         session.knowledge_added = knowledge_added
         session.token_usage_json = self._token_usage
         session.session_summary = summary
+        session.quality_score_json = self._aggregate_quality(self._quality_rollup)
         self.db.commit()
+
+        # F1 — post digest to Telegram for trend-producing agents. Wrapped so
+        # delivery failures (missing token, rate-limit) never sink a run.
+        if self.agent_type == "industry_research" and items_completed > 0:
+            try:
+                from telegram_bot.digest import send_digest
+                send_digest(self.db, session.id)
+            except Exception as exc:
+                logger.info("[%s] digest send skipped: %s", self.agent_type, exc)
 
         logger.info(f"[{self.agent_type}] Session {session.id} complete: {summary}")
 
@@ -268,6 +283,60 @@ class AutonomousAgent(ABC):
             "token_usage": self._token_usage,
             "elapsed_s": round(elapsed_total, 1),
             "summary": summary,
+        }
+
+    @staticmethod
+    def _aggregate_quality(rollup: list[dict]) -> dict | None:
+        """Reduce per-work-item quality dicts into one session-level summary.
+
+        Persisted to AgentSession.quality_score_json. Drives regression
+        alerts (F2) and the planner feedback loop.
+        """
+        if not rollup:
+            return None
+
+        def _avg(values: list[float]) -> float | None:
+            vals = [v for v in values if isinstance(v, (int, float))]
+            return round(sum(vals) / len(vals), 3) if vals else None
+
+        retrieval_yields = [q.get("retrieval_yield") for q in rollup if q.get("retrieval_yield") is not None]
+        novelty_yields = [q.get("novelty_yield") for q in rollup if q.get("novelty_yield") is not None]
+
+        total_in = total_out = drops_missing = drops_invalid = drops_not_in_bundle = 0
+        industries: set[str] = set()
+        plan_cached_flags: list[bool] = []
+        plan_query_counts: list[int] = []
+        for q in rollup:
+            for rep in q.get("validator", []) or []:
+                total_in += rep.get("total_in", 0)
+                total_out += rep.get("total_out", 0)
+                drops_missing += rep.get("dropped_missing_source", 0)
+                drops_invalid += rep.get("dropped_invalid_url", 0)
+                drops_not_in_bundle += rep.get("dropped_url_not_in_bundle", 0)
+            ind = q.get("inferred_industry")
+            if ind:
+                industries.add(ind)
+            if "plan_cached" in q:
+                plan_cached_flags.append(bool(q["plan_cached"]))
+            if "plan_queries" in q:
+                plan_query_counts.append(int(q["plan_queries"]))
+
+        return {
+            "retrieval_yield": _avg(retrieval_yields),
+            "novelty_yield": _avg(novelty_yields),
+            "validator": {
+                "candidates_in": total_in,
+                "candidates_kept": total_out,
+                "dropped_missing_source": drops_missing,
+                "dropped_invalid_url": drops_invalid,
+                "dropped_url_not_in_bundle": drops_not_in_bundle,
+            },
+            "inferred_industries": sorted(industries),
+            "plan_cached_ratio": round(
+                sum(1 for f in plan_cached_flags if f) / len(plan_cached_flags), 2,
+            ) if plan_cached_flags else None,
+            "plan_query_count_avg": _avg(plan_query_counts),
+            "n_items_instrumented": len(rollup),
         }
 
     def run_tool_loop(self, prompt: str, max_iterations: int = 20) -> dict:

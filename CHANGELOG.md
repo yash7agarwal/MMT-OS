@@ -2,6 +2,40 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] — 2026-04-20 — Compounding research architecture (Phase 1)
+
+Cross-industry contamination bug (Swiggy getting travel trends because `efficient_researcher.py` hardcoded 6 of 8 trend queries to travel terms) is now architecturally impossible. Queries derive from a typed per-project brief + Haiku-planned research plan, not from templates. Synthesis output passes a deterministic source-URL validator before touching the KG. Feedback loop wired from Telegram buttons.
+
+### Added
+- `agent/research_brief.py` — typed `ResearchBrief` + builder. All project context (name, description, competitors, recent trends, user-starred/dismissed, low-confidence entities, stale trends) flows through this object; no other path exists for project metadata to reach downstream stages.
+- `agent/query_planner.py` — single Haiku call per brief returns a structured plan (discovery + deepening + validation + lateral queries). Plans persist as `KnowledgeArtifact(artifact_type='research_plan')` keyed on `(project_id, brief_hash)` with a 24h TTL; re-runs on unchanged briefs hit the cache.
+- `agent/synthesis_validator.py` — deterministic check that every candidate observation's `source_url` appears in the retrieval bundle. Drops anything the model invents, logs drop count+reasons to `AgentSession.quality_score_json`. No LLM, no embedding — cheapest possible hallucination guardrail.
+- `telegram_bot/digest.py` — outbound digest sender. After every `industry_research` session, posts one compact message per new high-confidence trend with inline `[👍 Keep] [✖ Dismiss] [⭐ Star]` buttons. Raw-httpx, importable from any process.
+- `KnowledgeEntity.user_signal` + `dismissed_reason` columns — captures button taps. Dismissed canonicals become negative examples in the next brief.
+- `AgentSession.quality_score_json` column — deterministic per-run metrics (retrieval_yield, novelty_yield, validator counts, inferred_industries, plan_cached_ratio, plan_query_count_avg). Powers future regression alerts.
+- `POST /api/knowledge/entities/{id}/signal` — writes user_signal; Telegram callbacks and web UI both use it.
+- Trigram normalized-name dedupe layer in `knowledge_store.upsert_entity` — strips `.com`/`Inc`/`Ltd`/etc., unicode-folds, merges on Jaccard ≥0.9. "Booking" and "Booking.com Inc." converge on a single entity.
+
+### Changed
+- `efficient_researcher.research_industry_trends` now takes `(brief, plan)` — hardcoded travel search queries and travel-specific synthesis exemplars removed. Returns retrieval bundle alongside candidates so callers validate before writing.
+- Synthesis provider default flipped: **Claude Sonnet** (accuracy-first for the hallucination-sensitive stage), Groq behind explicit `PRISM_SYNTH_CHEAP=1`, Gemini as fallback.
+- `industry_research_agent.execute_work_item` now builds the brief, fetches/generates the plan, runs retrieval, validates, and accumulates per-item quality metrics.
+- `base_autonomous_agent.run_session` aggregates per-item quality into `AgentSession.quality_score_json` at session close and fires the Telegram digest for trend runs.
+- `industry_research_agent._build_work_prompt` — travel-specific examples ("solo travelers", "bleisure", "pet-friendly travel") replaced with domain-agnostic lens families; forbids cross-industry leakage.
+- `webapp/api/routes/knowledge.py` trends-view now exposes `user_signal`, `dismissed_reason`, `confidence` on each trend.
+- `KnowledgeEntityOut` + `AgentSessionOut` DTOs extended with the new fields.
+
+### Fixed
+- **Cross-project contamination (root cause)**: Swiggy (food delivery) had 8 travel-themed trends tagged to it from session 97 (`2026-04-19 19:07:08`). Cleaned up; re-ran yields food-delivery-native trends (Dark Store Fresh-Prep Upselling, Hyper-Local Ultra-Fast Hot Meal, QSR Speed, Food Hygiene).
+- **Timezone display**: added `UTCDatetime` serializer to `webapp/api/schemas.py` so naive `datetime.utcnow()` timestamps serialize with a `Z` suffix. "Last ran 5h ago" bug (IST offset error) fixed.
+- **Gemini tool-schema round-trip**: `utils/gemini_client.ask_with_tools` schema converter now recurses properly into array-of-object and nested-object types. Previously flattened to STRING, dropping the object shape.
+- `telegram_bot/digest._md_escape` escapes backslashes before special characters to avoid double-escaping; source URLs in digest messages now escape too (previously triggered Telegram 400s).
+
+### Migration notes
+- Schema additions land via idempotent `ALTER TABLE IF NOT EXISTS` in `webapp/api/db.init_db()` — no Alembic step required.
+- Set `TELEGRAM_PM_CHAT_ID` (or keep `TELEGRAM_CHAT_ID`) in `.env` to receive digest messages. Button callbacks require `python -m telegram_bot.run_bot` polling process.
+- `PRISM_SYNTH_CHEAP=1` env var reverts synthesis to Groq Llama for budget-conscious runs.
+
 ## [0.10.0] — 2026-04-19 — UAT carved out to Loupe
 
 Prism is now a pure product intelligence platform. The UAT half was carved into a sibling repo, **Loupe** (`yash7agarwal/loupe`), using `git filter-repo` to preserve UAT commit history back to v0.1.0. See LESSONS.md for the decision rationale.

@@ -1,10 +1,20 @@
 """Pydantic request/response schemas."""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any
+from datetime import datetime, timezone
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, PlainSerializer
+
+
+def _serialize_utc(value: UTCDatetime) -> str:
+    # DB stores naive UTC (datetime.utcnow); attach UTC so clients parse correctly.
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+UTCDatetime = Annotated[datetime, PlainSerializer(_serialize_utc, return_type=str)]
 
 
 # ---------- Project ----------
@@ -30,7 +40,7 @@ class ProjectOut(BaseModel):
     name: str
     app_package: str | None
     description: str | None
-    created_at: datetime
+    created_at: UTCDatetime
 
 
 class ProjectStats(BaseModel):
@@ -58,8 +68,8 @@ class ScreenOut(BaseModel):
     screenshot_path: str
     elements: list[Any] | None
     context_hints: str | None = None
-    discovered_at: datetime
-    last_updated: datetime
+    discovered_at: UTCDatetime
+    last_updated: UTCDatetime
 
 
 class ScreenUpdate(BaseModel):
@@ -152,7 +162,7 @@ class TestPlanOut(BaseModel):
     voice_transcript: str | None
     status: str
     plan_type: str = "feature_flow"
-    created_at: datetime
+    created_at: UTCDatetime
     cases: list[TestCaseOut] = []
 
 
@@ -170,8 +180,16 @@ class KnowledgeEntityOut(BaseModel):
     metadata_json: dict | None
     source_agent: str | None
     confidence: float
-    first_seen_at: datetime
-    last_updated_at: datetime
+    first_seen_at: UTCDatetime
+    last_updated_at: UTCDatetime
+    user_signal: str | None = None
+    dismissed_reason: str | None = None
+
+
+class EntitySignalIn(BaseModel):
+    """Request body for POST /api/knowledge/entities/{id}/signal."""
+    signal: str  # "kept" | "dismissed" | "starred" | "clear"
+    reason: str | None = None  # optional free-text "why" for dismissals
 
 
 class KnowledgeEntityDetail(KnowledgeEntityOut):
@@ -187,7 +205,7 @@ class KnowledgeRelationOut(BaseModel):
     relation_type: str
     metadata_json: dict | None
     source_agent: str | None
-    created_at: datetime
+    created_at: UTCDatetime
 
 
 class KnowledgeObservationOut(BaseModel):
@@ -197,8 +215,8 @@ class KnowledgeObservationOut(BaseModel):
     observation_type: str
     content: str
     evidence_json: dict | None
-    observed_at: datetime
-    recorded_at: datetime
+    observed_at: UTCDatetime
+    recorded_at: UTCDatetime
     source_url: str | None
     source_agent: str | None
 
@@ -212,7 +230,7 @@ class KnowledgeArtifactOut(BaseModel):
     content_md: str
     entity_ids_json: list | None
     generated_by_agent: str | None
-    generated_at: datetime
+    generated_at: UTCDatetime
     is_stale: bool
 
 
@@ -227,7 +245,7 @@ class KnowledgeScreenshotOut(BaseModel):
     app_package: str | None
     app_version: str | None
     visual_hash: str | None
-    captured_at: datetime
+    captured_at: UTCDatetime
     captured_by_agent: str | None
     flow_session_id: str | None
     sequence_order: int | None
@@ -243,9 +261,9 @@ class WorkItemOut(BaseModel):
     description: str
     status: str
     result_summary: str | None
-    created_at: datetime
-    started_at: datetime | None
-    completed_at: datetime | None
+    created_at: UTCDatetime
+    started_at: UTCDatetime | None
+    completed_at: UTCDatetime | None
 
 
 class AgentSessionOut(BaseModel):
@@ -253,12 +271,13 @@ class AgentSessionOut(BaseModel):
     id: int
     project_id: int
     agent_type: str
-    started_at: datetime
-    completed_at: datetime | None
+    started_at: UTCDatetime
+    completed_at: UTCDatetime | None
     items_completed: int
     items_failed: int
     knowledge_added: int
     session_summary: str | None
+    quality_score_json: dict | None = None
 
 
 class KnowledgeSummary(BaseModel):

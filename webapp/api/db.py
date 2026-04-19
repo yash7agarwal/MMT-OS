@@ -74,6 +74,20 @@ def init_db() -> None:
             if "lens_tags" not in existing_cols:
                 conn.execute(text("ALTER TABLE knowledge_observations ADD COLUMN lens_tags JSON"))
 
+    # Phase-1 research-architecture columns.
+    if "knowledge_entities" in inspector.get_table_names():
+        existing_cols = {c["name"] for c in inspector.get_columns("knowledge_entities")}
+        with engine.begin() as conn:
+            if "user_signal" not in existing_cols:
+                conn.execute(text("ALTER TABLE knowledge_entities ADD COLUMN user_signal VARCHAR(20)"))
+            if "dismissed_reason" not in existing_cols:
+                conn.execute(text("ALTER TABLE knowledge_entities ADD COLUMN dismissed_reason TEXT"))
+    if "agent_sessions" in inspector.get_table_names():
+        existing_cols = {c["name"] for c in inspector.get_columns("agent_sessions")}
+        with engine.begin() as conn:
+            if "quality_score_json" not in existing_cols:
+                conn.execute(text("ALTER TABLE agent_sessions ADD COLUMN quality_score_json JSON"))
+
 
 SCREENSHOTS_DIR = _DATA_DIR / "screenshots"
 
