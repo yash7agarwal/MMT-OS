@@ -124,6 +124,27 @@ class ProductOSOrchestrator:
             )
             result["agent_type"] = agent_type
             result["status"] = "completed"
+
+            # v0.10.4 — post-session quality gate for synthesis agents.
+            # ux_intel produces screenshots not observations; skip it.
+            if agent_type in ("intel", "impact_analysis"):
+                try:
+                    from agent.quality_review_agent import QualityReviewAgent
+                    # Review everything written in the session window + a small
+                    # buffer. The agent skips observations it's already flagged.
+                    since_minutes = max(
+                        5,
+                        int(agent_cfg["max_session_duration_s"] / 60) + 2,
+                    )
+                    qr = QualityReviewAgent(self.project_id, db)
+                    qr_result = qr.review_recent(since_minutes=since_minutes)
+                    result["quality_review"] = qr_result
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[orchestrator] quality_review raised for %s: %s",
+                        agent_type, exc,
+                    )
+
             return result
 
         except Exception as e:
