@@ -1,6 +1,6 @@
 {
   "name": "prism-web",
-  "version": "0.9.2",
+  "version": "0.10.5",
   "private": true,
   "scripts": {
     "dev": "next dev",
