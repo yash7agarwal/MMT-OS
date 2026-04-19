@@ -486,14 +486,27 @@ Return ONLY a JSON array. Each item:
             from agent.efficient_researcher import research_competitor
             result = research_competitor(competitor_name, self.project_name, self.project_description)
 
+            # Resolve the target company entity ONCE for this work item. The
+            # lookup must filter by entity_type='company' — without it, a sibling
+            # App entity (e.g. "Blinkit App") created by ux_intel would be
+            # picked first, and all profile observations would silently leak
+            # onto the wrong entity. That bug is why `/competitors` reported
+            # many competitors at 10% confidence while their profile work
+            # items claimed "Profiled X: N findings" with N>0.
+            company_matches = self.knowledge.find_entities(
+                entity_type="company", name_like=competitor_name,
+            )
+            if company_matches:
+                target_company_id = company_matches[0]["id"]
+            else:
+                target_company_id = self.knowledge.upsert_entity(
+                    "company", competitor_name, f"Competitor of {self.project_name}",
+                )
+
             # Save findings to knowledge graph
             for finding in result.get("findings", []):
-                entities = self.knowledge.find_entities(name_like=competitor_name)
-                entity_id = entities[0]["id"] if entities else self.knowledge.upsert_entity(
-                    "company", competitor_name, f"Competitor of {self.project_name}"
-                )
                 self.knowledge.add_observation(
-                    entity_id=entity_id,
+                    entity_id=target_company_id,
                     obs_type=finding.get("type", "general"),
                     content=finding.get("content", ""),
                     source_url=finding.get("source_url"),
@@ -502,13 +515,11 @@ Return ONLY a JSON array. Each item:
 
             # Save profile report as artifact
             if result.get("profile_md"):
-                entities = self.knowledge.find_entities(name_like=competitor_name)
-                entity_ids = [entities[0]["id"]] if entities else []
                 self.knowledge.save_artifact(
                     artifact_type="competitor_profile",
                     title=f"{competitor_name} — Competitive Profile",
                     content_md=result["profile_md"],
-                    entity_ids=entity_ids,
+                    entity_ids=[target_company_id],
                 )
 
             self._current_result = {

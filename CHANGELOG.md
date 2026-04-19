@@ -2,6 +2,11 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.12.1] — 2026-04-20 — Fix: competitor profile observations leaked to `app` sibling
+
+### Fixed
+- `agent/competitive_intel_agent.execute_work_item` — the profile-save loop was calling `find_entities(name_like=competitor_name)` without an `entity_type` filter, so the first match (often an `app`-typed sibling like "Blinkit (by Zomato) App" created by ux_intel) collected all `add_observation` writes. The company-typed entity received zero observations, which caused `/api/knowledge/competitors` to compute 10% confidence (the "0 obs → 0.1" branch) for any competitor whose name overlapped an app entity. Affected 3 of 8 Swiggy competitors (Blinkit, Zepto, Rapido). Fix resolves `target_company_id` once per work item via `find_entities(entity_type="company", name_like=…)` and reuses that id for every observation + artifact write. Verified via monkey-patched test: 3 stub findings landed on company id=26, 0 on app sibling id=27, artifact `entity_ids_json=[26]`.
+
 ## [0.12.0] — 2026-04-20 — Phase 1.5: quality regression alerts + one-click purge
 
 Closes the feedback loop that v0.11.0 opened: the system now notices when its own quality is degrading and gives the PM a one-tap remedy for bad data.
