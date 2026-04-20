@@ -1,23 +1,29 @@
-# MMT-OS Telegram Bot — lightweight cloud image (no Android SDK)
+# Prism — single image, both services (prism-api + prism-bot).
 #
-# The bot is the always-on interface. UAT execution happens on a
-# machine with a connected device (Mac or dedicated device host).
+# The Railway start command differs per service (RAILWAY_RUN_COMMAND env var):
+#   prism-api: uvicorn webapp.api.main:app --host 0.0.0.0 --port $PORT
+#   prism-bot: python -m telegram_bot.run_bot
 #
-# Build:  docker build -f Dockerfile.bot -t mmt-os-bot .
-# Run:    docker run --env-file .env mmt-os-bot
+# Build locally:  docker build -t prism .
+# Run API:        docker run -p 8000:8000 --env-file .env prism \
+#                   uvicorn webapp.api.main:app --host 0.0.0.0 --port 8000
+# Run bot:        docker run --env-file .env prism
 
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Only install bot + API deps (no uiautomator2, no Android tooling)
-COPY requirements.bot.txt .
-RUN pip install --no-cache-dir -r requirements.bot.txt
+# Full deps — covers both API (fastapi/uvicorn/sqlalchemy) and bot
+# (python-telegram-bot/httpx), plus shared anthropic/gemini clients.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN mkdir -p apks reports memory .tmp/evidence
+# Writable dirs used at runtime — Railway volume overlays /app/webapp/data.
+RUN mkdir -p memory .tmp/evidence webapp/data/screenshots
 
 ENV PYTHONPATH=/app
 
+# Default to the bot; Railway overrides per-service via RAILWAY_RUN_COMMAND.
 CMD ["python", "-m", "telegram_bot.run_bot"]

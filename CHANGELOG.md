@@ -2,6 +2,13 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] — 2026-04-20 — Railway-ready Dockerfile
+
+### Changed
+- `Dockerfile` now installs from the full `requirements.txt` (was `requirements.bot.txt`) so both `prism-api` and `prism-bot` can run from one image. Default CMD stays as the bot; `prism-api` overrides via `RAILWAY_RUN_COMMAND=uvicorn webapp.api.main:app --host 0.0.0.0 --port $PORT`.
+- `requirements.txt` trimmed to the live stack: added explicit `sqlalchemy>=2.0`, `httpx>=0.27`; removed UAT-era deps (`uiautomator2`, `pixelmatch`, `lxml`, `mcp`, `aiohttp`) that moved to Loupe in v0.10.0.
+- `railway.json` no longer hard-codes `startCommand` — per-service `RAILWAY_RUN_COMMAND` variables drive it now so both services can share one config.
+
 ## [0.13.0] — 2026-04-20 — Phase 2 + Phase 3 complete
 
 Closes out the research-architecture roadmap. Every surface from `/Users/yash/.claude/plans/polished-hatching-bubble.md` is now in the repo and verified.

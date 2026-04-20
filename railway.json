@@ -5,7 +5,6 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "python3.11 telegram_bot/run_bot.py",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 5
   }
