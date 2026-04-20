@@ -31,7 +31,7 @@ logging.basicConfig(
 app = FastAPI(
     title="Prism API",
     description="Product intelligence platform — competitive research, trends, impacts. UAT lives in Loupe.",
-    version="0.12.1",
+    version="0.12.2",
 )
 
 app.add_middleware(
@@ -56,7 +56,35 @@ app.include_router(digest.router)
 @app.on_event("startup")
 def on_startup() -> None:
     init_db()
-    logging.getLogger(__name__).info("Prism API started — DB initialized")
+    log = logging.getLogger(__name__)
+    log.info("Prism API started — DB initialized")
+
+    # Auto-start the research orchestrator daemon per project, for production
+    # deploys (Railway). Gated behind PRISM_AUTO_DAEMON=1 so local `uvicorn
+    # --reload` cycles don't spam provider APIs on every restart.
+    import os
+    if os.environ.get("PRISM_AUTO_DAEMON", "").strip() in ("1", "true", "yes"):
+        from webapp.api.db import SessionLocal
+        from webapp.api.models import Project
+        from agent.product_os_orchestrator import ProductOSOrchestrator
+
+        db = SessionLocal()
+        try:
+            projects = db.query(Project).all()
+            for p in projects:
+                try:
+                    ProductOSOrchestrator(project_id=p.id).start_daemon()
+                    log.info(
+                        "[auto-daemon] started orchestrator for project %d (%s)",
+                        p.id, p.name,
+                    )
+                except Exception as exc:
+                    log.error(
+                        "[auto-daemon] failed to start for project %d: %s",
+                        p.id, exc, exc_info=True,
+                    )
+        finally:
+            db.close()
 
 
 @app.get("/api/health")

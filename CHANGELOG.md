@@ -2,6 +2,18 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.12.2] — 2026-04-20 — Railway deploy prep
+
+### Added
+- `PRISM_AUTO_DAEMON` env flag — when set to `1`, the FastAPI startup hook launches a `ProductOSOrchestrator` daemon per project on boot. Gated because local `uvicorn --reload` would otherwise spam provider APIs on every restart. Intended for Railway + any long-running production target.
+- Refreshed `.env.example` to match the current provider stack (Claude / Gemini / Groq / Tavily / Brave), current Telegram variables (`TELEGRAM_PM_CHAT_ID`, `TELEGRAM_CHAT_ID`), the `PRISM_SYNTH_CHEAP` synthesis-provider toggle, and the new `PRISM_AUTO_DAEMON`. Removed stale UAT-era variables (`FIGMA_API_TOKEN`, `UAT_ACCOUNTS_FILE`, `UAT_FEATURE`, `DEVICE_SERIAL`).
+
+### Deployment notes
+- Two-service Railway setup:
+  - `prism-api`: `uvicorn webapp.api.main:app --host 0.0.0.0 --port $PORT`, env `PRISM_AUTO_DAEMON=1`
+  - `prism-bot`: `python -m telegram_bot.run_bot`, env `PRISM_API_URL=http://prism-api.railway.internal:$PORT`
+- Persistent storage: mount a Railway volume at `/app/webapp/data` so SQLite + screenshots survive redeploys.
+
 ## [0.12.1] — 2026-04-20 — Fix: competitor profile observations leaked to `app` sibling
 
 ### Fixed
