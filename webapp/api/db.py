@@ -1,6 +1,18 @@
-"""SQLAlchemy engine, session, and Base setup. Single SQLite file under webapp/data/."""
+"""SQLAlchemy engine, session, and Base setup.
+
+Dual-mode:
+  - **Local dev** (no DATABASE_URL set): single SQLite file under webapp/data/.
+  - **Production** (Railway, Neon, etc.): Postgres via DATABASE_URL env.
+
+Pick-up logic:
+  1. If DATABASE_URL is set, use it. Normalize `postgres://` → `postgresql://`
+     (Railway emits the legacy scheme; SQLAlchemy 2+ rejects it).
+  2. Otherwise fall back to the local SQLite file. Keeps `python -m uvicorn ...`
+     on a fresh checkout working without any env setup.
+"""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -10,13 +22,34 @@ _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 (_DATA_DIR / "screenshots").mkdir(exist_ok=True)
 
-DATABASE_URL = f"sqlite:///{_DATA_DIR / 'appuat.db'}"
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False},
-    echo=False,
-)
+def _resolve_database_url() -> str:
+    raw = os.environ.get("DATABASE_URL", "").strip()
+    if raw:
+        # Railway still emits the legacy "postgres://" prefix; SQLAlchemy 2+
+        # requires "postgresql://" (or a driver-qualified variant).
+        if raw.startswith("postgres://"):
+            raw = "postgresql://" + raw[len("postgres://"):]
+        return raw
+    return f"sqlite:///{_DATA_DIR / 'appuat.db'}"
+
+
+DATABASE_URL = _resolve_database_url()
+_is_sqlite = DATABASE_URL.startswith("sqlite")
+
+# SQLite needs check_same_thread=False for FastAPI's threadpool access;
+# Postgres drivers don't need (and reject) that kwarg.
+_engine_kwargs: dict = {"echo": False}
+if _is_sqlite:
+    _engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # Reasonable pool defaults for Railway's small Postgres — Railway keeps
+    # connections cheap but has a max; stay well under it.
+    _engine_kwargs["pool_pre_ping"] = True
+    _engine_kwargs["pool_size"] = 5
+    _engine_kwargs["max_overflow"] = 10
+
+engine = create_engine(DATABASE_URL, **_engine_kwargs)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -37,8 +70,10 @@ def get_db():
 def init_db() -> None:
     """Create all tables and run lightweight column + index migrations.
 
-    SQLite-only. For real schema management, use Alembic. For an MVP single-user
-    app this is sufficient and avoids data loss.
+    Backend-agnostic: uses SQLAlchemy's inspector for schema introspection and
+    only runs SQL that both SQLite and Postgres understand. For real multi-
+    developer schema management, switch to Alembic — this file handles the
+    solo-PM case safely and avoids data loss on upgrade.
     """
     import logging
     from sqlalchemy import inspect, text
@@ -47,7 +82,8 @@ def init_db() -> None:
 
     log = logging.getLogger(__name__)
 
-    # Add columns that were introduced after initial create_all
+    # Add columns introduced after initial create_all. Both SQLite and
+    # Postgres accept `ALTER TABLE ... ADD COLUMN ...` and `DEFAULT 'val'`.
     inspector = inspect(engine)
     if "screens" in inspector.get_table_names():
         existing_cols = {c["name"] for c in inspector.get_columns("screens")}
@@ -63,8 +99,6 @@ def init_db() -> None:
                 ))
 
     # v0.10.1 — dedup + indexes on the knowledge graph.
-    # SQLAlchemy's create_all covers fresh installs; these statements upgrade
-    # existing DBs without breaking them.
     if "knowledge_entities" in inspector.get_table_names():
         _dedup_knowledge_entities()
         _ensure_knowledge_indexes(log)
@@ -72,6 +106,7 @@ def init_db() -> None:
         existing_cols = {c["name"] for c in inspector.get_columns("knowledge_observations")}
         with engine.begin() as conn:
             if "lens_tags" not in existing_cols:
+                # JSON type: Postgres resolves to jsonb, SQLite stores as TEXT.
                 conn.execute(text("ALTER TABLE knowledge_observations ADD COLUMN lens_tags JSON"))
 
     # Phase-1 research-architecture columns.
@@ -95,43 +130,41 @@ SCREENSHOTS_DIR = _DATA_DIR / "screenshots"
 
 
 def _dedup_knowledge_entities() -> None:
-    """Merge duplicate (project_id, name) rows in knowledge_entities before the
-    UNIQUE index goes on. Keeps the lowest id, rewrites FKs on observations,
-    relations (both ends), and screenshots, then deletes the redundant rows.
+    """Merge duplicate (project_id, canonical_name) rows before the UNIQUE
+    index goes on. Idempotent: zero duplicates → does nothing.
 
-    Idempotent: finds zero duplicates → does nothing.
+    Backend-agnostic: uses Python aggregation instead of SQLite's GROUP_CONCAT
+    so the same code path works on Postgres.
     """
     import logging
+    from collections import defaultdict
     from sqlalchemy import text
 
     log = logging.getLogger(__name__)
     with engine.begin() as conn:
-        # Backfill canonical_name for legacy rows (pre-v0.9 writes didn't set it).
+        # Backfill canonical_name for legacy rows.
         conn.execute(text(
             "UPDATE knowledge_entities "
             "SET canonical_name = LOWER(TRIM(name)) "
             "WHERE canonical_name IS NULL OR canonical_name = ''"
         ))
-        dupes = conn.execute(text(
-            """
-            SELECT project_id, canonical_name, MIN(id) AS keep_id,
-                   GROUP_CONCAT(id) AS all_ids
-              FROM knowledge_entities
-             WHERE canonical_name IS NOT NULL
-             GROUP BY project_id, canonical_name
-            HAVING COUNT(*) > 1
-            """
+        rows = conn.execute(text(
+            "SELECT id, project_id, canonical_name FROM knowledge_entities "
+            "WHERE canonical_name IS NOT NULL"
         )).fetchall()
 
+        groups: dict[tuple[int, str], list[int]] = defaultdict(list)
+        for row in rows:
+            groups[(row.project_id, row.canonical_name)].append(row.id)
+
+        dupes = {k: sorted(v) for k, v in groups.items() if len(v) > 1}
         if not dupes:
             return
 
         merged_count = 0
-        for row in dupes:
-            keep_id = row.keep_id
-            drop_ids = [int(x) for x in row.all_ids.split(",") if int(x) != keep_id]
-            if not drop_ids:
-                continue
+        for (_pid, _canon), ids in dupes.items():
+            keep_id = ids[0]
+            drop_ids = ids[1:]
             placeholders = ",".join(str(i) for i in drop_ids)
             conn.execute(text(
                 f"UPDATE knowledge_observations SET entity_id = :k WHERE entity_id IN ({placeholders})"
@@ -151,16 +184,14 @@ def _dedup_knowledge_entities() -> None:
             merged_count += len(drop_ids)
 
         log.info(
-            "[init_db] Deduplicated %d knowledge_entities rows across %d (project_id, name) groups",
+            "[init_db] Deduplicated %d knowledge_entities rows across %d groups",
             merged_count, len(dupes),
         )
 
 
 def _ensure_knowledge_indexes(log) -> None:
-    """CREATE INDEX / UNIQUE INDEX IF NOT EXISTS for knowledge-graph hot paths.
-
-    create_all() would create these for fresh DBs, but existing installs still
-    need the upgrade. IF NOT EXISTS makes this safely idempotent.
+    """CREATE INDEX / UNIQUE INDEX IF NOT EXISTS. Both SQLite and Postgres
+    understand IF NOT EXISTS, so this is portable.
     """
     from sqlalchemy import text
     statements = [
@@ -190,6 +221,4 @@ def _ensure_knowledge_indexes(log) -> None:
             try:
                 conn.execute(text(sql))
             except Exception as exc:
-                # UNIQUE may fail if dedup missed a case; log and continue so we
-                # don't brick startup on a migration edge case.
                 log.warning("[init_db] Index create skipped: %s — %s", sql.split(" ")[5], exc)

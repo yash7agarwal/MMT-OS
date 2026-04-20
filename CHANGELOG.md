@@ -2,6 +2,22 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — 2026-04-20 — Dual-mode DB (Postgres-ready)
+
+### Added
+- `webapp/api/db.py` now reads `DATABASE_URL` and uses Postgres when set; falls back to the local SQLite file otherwise. Normalizes Railway's legacy `postgres://` scheme → `postgresql://` for SQLAlchemy 2+.
+- `tools/migrate_sqlite_to_postgres.py` — SQLAlchemy-based row-by-row copier. Walks tables in FK dependency order, preserves primary keys, resets Postgres sequences, and verifies source-vs-target counts. Has `--dry-run` to preview without writing.
+- `psycopg2-binary` added to `requirements.txt` (unused locally until `DATABASE_URL` is set).
+
+### Changed
+- `_dedup_knowledge_entities` in `db.py` now aggregates duplicates in Python (`collections.defaultdict`) instead of SQLite's `GROUP_CONCAT` — portable across backends.
+
+### Deployment path
+Once a Postgres service is attached on Railway (`railway add --database postgres` via dashboard/CLI) and `DATABASE_URL` is referenced on `prism-api`:
+1. Redeploy `prism-api` — image picks up `psycopg2-binary`, `init_db()` creates the schema on Postgres.
+2. Run `DATABASE_URL=<railway-postgres-url> python -m tools.migrate_sqlite_to_postgres` from local → copies all 3 projects, 169 entities, 273 observations, 108 sessions.
+3. Detach the old Railway SQLite volume (data no longer lives there).
+
 ## [0.13.4] — 2026-04-20 — CORS for Vercel frontend + is-a.dev
 
 ### Added
