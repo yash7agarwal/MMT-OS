@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, text
+from sqlalchemy import String, cast, func, or_, text
 from sqlalchemy.orm import Session
 
 from webapp.api.db import get_db
@@ -538,13 +538,14 @@ def get_lens_detail(
 
     result_entities = []
     for entity in entities:
-        # Use LIKE to find observations where lens_tags JSON contains the lens name
+        # Postgres rejects LIKE on JSON; cast to text so the same predicate
+        # works on both SQLite (TEXT-backed JSON) and Postgres (json/jsonb).
         observations = (
             db.query(KnowledgeObservation)
             .filter(
                 KnowledgeObservation.entity_id == entity.id,
                 KnowledgeObservation.lens_tags.isnot(None),
-                KnowledgeObservation.lens_tags.like(f'%"{lens_name}"%'),
+                cast(KnowledgeObservation.lens_tags, String).like(f'%"{lens_name}"%'),
             )
             .order_by(KnowledgeObservation.observed_at.desc())
             .all()
@@ -601,10 +602,14 @@ def get_trends_view(
     for t in trends_raw:
         meta = t.metadata_json or {}
 
-        # Get observations
+        # Get recent observations for display + full count separately so the
+        # UI doesn't report a truncated number when there are >5 observations.
         obs = db.query(KnowledgeObservation).filter(
             KnowledgeObservation.entity_id == t.id
         ).order_by(KnowledgeObservation.recorded_at.desc()).limit(5).all()
+        obs_total = db.query(func.count(KnowledgeObservation.id)).filter(
+            KnowledgeObservation.entity_id == t.id
+        ).scalar() or 0
 
         # Get adoption (companies linked via addresses_trend relation)
         adoptions = (
@@ -661,7 +666,7 @@ def get_trends_view(
                 for o in obs
             ],
             "adoption": adoption_list,
-            "observation_count": len(obs),
+            "observation_count": obs_total,
         })
 
     # Sort: future > emerging > present > past

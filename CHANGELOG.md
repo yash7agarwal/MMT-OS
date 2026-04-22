@@ -2,6 +2,27 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.15.1] — 2026-04-20 — Lens-detail PG fix + visible error surfaces
+
+Patch cut after the MakeMyTrip "Lenses → 0 found" report. Root cause was the third occurrence of the same bug class: a number displayed somewhere diverged from the list endpoint behind it, and the frontend swallowed the resulting error with `.catch(() => {})`. This release fixes the specific query, replaces silent catches with visible error banners across five tabs, and expands the invariant suite to 32 tests so the class can't recur unnoticed.
+
+### Fixed
+- `webapp/api/routes/knowledge.py:547` — `/api/knowledge/lens/{name}` used `.like()` on a JSON column, which Postgres rejects with `operator does not exist: json ~~ unknown`. Now casts `lens_tags` to `String` via `sqlalchemy.cast` so the predicate works on both SQLite (TEXT-backed JSON) and Postgres (json/jsonb).
+- `webapp/api/routes/knowledge.py:664` — trends-view's `observation_count` was computed from a `.limit(5)` slice, so any trend with >5 observations under-reported. Now uses a separate `func.count()` query for the total.
+
+### Added
+- `webapp/web/components/ErrorBanner.tsx` — shared error surface. Replaces silent `.catch(() => {})` with a visible banner on Lenses, Lens detail, Trends, Impacts, and Intelligence tabs. Silent failures are how three bug reports ("3 competitors but empty", "Lenses 0 found", "Trends undercount") survived — every user-facing fetch now has a loud error path.
+- Six new invariant tests in `tests/test_stats_consistency.py` (32 total, up from 22):
+  - `test_lens_detail_returns_data_when_matrix_has_counts` — if matrix reports non-zero counts, `/lens/{name}` must return ≥1 entity.
+  - `test_lens_matrix_totals_roughly_match_detail` — matrix sum ≤ detail observation count.
+  - `test_trends_observation_count_is_not_truncated` — `observation_count ≥ len(observations[])`.
+  - `test_entities_endpoint_honors_high_limit` — `?limit=500` is honored.
+  - `test_no_tab_endpoint_returns_5xx` — every tab endpoint returns <500 for every project.
+  - `test_lens_detail_endpoint_never_500s` — the specific endpoint that was broken must return 200 for every known lens.
+
+### Changed
+- `tests/test_stats_consistency.py` — collection no longer aborts when the target API is unreachable; instead individual tests are parametrized with zero cases and fixture-based tests call `pytest.skip` at runtime.
+
 ## [0.15.0] — 2026-04-21 — Prism↔Loupe PRD bridge + metric-consistency guard
 
 ### Added

@@ -13,6 +13,7 @@ import {
   CaretUp,
 } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
+import { ErrorBanner } from '@/components/ErrorBanner'
 
 interface GraphNode {
   id: string
@@ -46,17 +47,23 @@ export default function ImpactsPage({ params }: { params: { id: string } }) {
   const [nodes, setNodes] = useState<GraphNode[]>([])
   const [edges, setEdges] = useState<GraphEdge[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [expandedTrend, setExpandedTrend] = useState<string | null>(null)
 
   useEffect(() => {
+    setError(null)
     api.impactGraph(projectId)
       .then((d: any) => { setNodes(d.nodes || []); setEdges(d.edges || []) })
-      .catch(() => {})
+      .catch((err: Error) => setError(err.message || String(err)))
       .finally(() => setLoading(false))
   }, [projectId])
 
   if (loading) {
     return <div className="space-y-4">{[0,1,2].map(i => <div key={i} className="skeleton h-32 w-full rounded-xl" />)}</div>
+  }
+
+  if (error) {
+    return <ErrorBanner message={error} />
   }
 
   const trends = nodes.filter(n => n.type === 'trend')

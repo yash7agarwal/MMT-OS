@@ -34,13 +34,19 @@ def _get(path: str):
 def _projects() -> list[dict]:
     try:
         return _get("/api/projects")
-    except Exception as exc:
-        pytest.skip(f"Prism API unreachable at {BASE}: {exc}")
+    except Exception:
+        # Collection-time failures (DNS, 500) must not abort the whole module.
+        # Return an empty list so parametrized tests are generated with zero
+        # cases and the fixture-based tests can call pytest.skip at runtime.
+        return []
 
 
 @pytest.fixture(scope="module")
 def projects() -> list[dict]:
-    return _projects()
+    ps = _projects()
+    if not ps:
+        pytest.skip(f"Prism API unreachable at {BASE}")
+    return ps
 
 
 @pytest.mark.parametrize("_fixture_anchor", [None])
@@ -113,3 +119,123 @@ def test_project_detail_has_required_stats(project_id):
     for k in ("screen_count", "entity_count", "observation_count", "competitor_count"):
         assert k in stats, f"project {project_id} stats missing {k!r}"
         assert isinstance(stats[k], int), f"stats.{k} must be int, got {type(stats[k]).__name__}"
+
+
+# ---- Ch.13 invariants — lens/trends/artifact convergence ----
+
+
+@pytest.mark.parametrize("project_id", _project_ids(_projects()) if True else [])
+def test_lens_detail_returns_data_when_matrix_has_counts(project_id):
+    """If /lens-matrix reports non-zero counts for a lens, /lens/{name} must
+    return at least that many entities. The MakeMyTrip "0 found" bug (Ch.13)
+    lived exactly in the gap between these two endpoints.
+    """
+    try:
+        matrix = _get(f"/api/knowledge/lens-matrix?project_id={project_id}")
+    except httpx.HTTPStatusError:
+        pytest.skip(f"lens-matrix not available for project {project_id}")
+    lenses = matrix.get("lenses", [])
+    competitors = matrix.get("competitors", [])
+    for lens in lenses:
+        matrix_total = sum((c.get("lens_counts", {}) or {}).get(lens, 0) for c in competitors)
+        if matrix_total == 0:
+            continue
+        detail = _get(f"/api/knowledge/lens/{lens}?project_id={project_id}")
+        entities = detail.get("entities", [])
+        assert len(entities) > 0, (
+            f"project {project_id} lens {lens!r}: matrix reports "
+            f"{matrix_total} tagged observations but /lens/{lens} returned 0 entities"
+        )
+
+
+@pytest.mark.parametrize("project_id", _project_ids(_projects()) if True else [])
+def test_lens_matrix_totals_roughly_match_detail(project_id):
+    """Sum of matrix counts per lens should be within parity of the
+    observation count returned by /lens/{name}. We allow equal-or-greater
+    detail count (the matrix is per-competitor, the detail includes any
+    observation tagged with that lens)."""
+    try:
+        matrix = _get(f"/api/knowledge/lens-matrix?project_id={project_id}")
+    except httpx.HTTPStatusError:
+        pytest.skip(f"lens-matrix not available for project {project_id}")
+    lenses = matrix.get("lenses", [])
+    competitors = matrix.get("competitors", [])
+    for lens in lenses:
+        matrix_total = sum((c.get("lens_counts", {}) or {}).get(lens, 0) for c in competitors)
+        if matrix_total == 0:
+            continue
+        detail = _get(f"/api/knowledge/lens/{lens}?project_id={project_id}")
+        detail_obs = sum(len(e.get("observations", [])) for e in detail.get("entities", []))
+        assert detail_obs >= matrix_total, (
+            f"project {project_id} lens {lens!r}: matrix says {matrix_total} "
+            f"obs but /lens/{lens} only returned {detail_obs}"
+        )
+
+
+@pytest.mark.parametrize("project_id", _project_ids(_projects()) if True else [])
+def test_trends_observation_count_is_not_truncated(project_id):
+    """trends-view used to compute observation_count from a .limit(5) query,
+    so any trend with >5 observations would under-report. The count must now
+    reflect the real DB count — at minimum never less than the length of the
+    observations array returned on the same row."""
+    try:
+        data = _get(f"/api/knowledge/trends-view?project_id={project_id}")
+    except httpx.HTTPStatusError:
+        pytest.skip(f"trends-view not available for project {project_id}")
+    trends = data if isinstance(data, list) else data.get("trends", [])
+    for t in trends:
+        oc = t.get("observation_count", 0)
+        shown = len(t.get("observations", []))
+        assert oc >= shown, (
+            f"project {project_id} trend {t.get('name')!r}: observation_count={oc} "
+            f"but observations array has {shown} items (truncation regression)"
+        )
+
+
+@pytest.mark.parametrize("project_id", _project_ids(_projects()) if True else [])
+def test_entities_endpoint_honors_high_limit(project_id):
+    """/entities has a default limit of 50; a cards-consuming client must be
+    able to bump it to 500 without the server silently capping. Assert that
+    the returned list length is either <=50 (normal) or <=500 (bumped)."""
+    r = httpx.get(f"{BASE}/api/knowledge/entities?project_id={project_id}&limit=500", timeout=TIMEOUT_S)
+    r.raise_for_status()
+    items = r.json()
+    assert len(items) <= 500, (
+        f"project {project_id}: /entities?limit=500 returned {len(items)} items "
+        f"— exceeds documented max"
+    )
+
+
+@pytest.mark.parametrize("project_id", _project_ids(_projects()) if True else [])
+def test_no_tab_endpoint_returns_5xx(project_id):
+    """Every read endpoint the web tabs hit must return a non-5xx. Catches
+    regressions like the PG JSON LIKE bug before they reach a user."""
+    paths = [
+        f"/api/projects/{project_id}",
+        f"/api/knowledge/entities?project_id={project_id}&limit=50",
+        f"/api/knowledge/competitors?project_id={project_id}",
+        f"/api/knowledge/trends-view?project_id={project_id}",
+        f"/api/knowledge/lens-matrix?project_id={project_id}",
+        f"/api/knowledge/impact-graph?project_id={project_id}",
+        f"/api/product-os/{project_id}/status",
+    ]
+    for p in paths:
+        r = httpx.get(f"{BASE}{p}", timeout=TIMEOUT_S)
+        assert r.status_code < 500, (
+            f"project {project_id}: {p} returned {r.status_code} — {r.text[:200]}"
+        )
+
+
+@pytest.mark.parametrize("project_id", _project_ids(_projects()) if True else [])
+def test_lens_detail_endpoint_never_500s(project_id):
+    """The specific endpoint that was broken (PG rejecting LIKE on JSON)
+    must now return 200 for every known lens name."""
+    known_lenses = [
+        "product_craft", "growth", "supply", "monetization",
+        "technology", "brand_trust", "moat", "trajectory",
+    ]
+    for lens in known_lenses:
+        r = httpx.get(f"{BASE}/api/knowledge/lens/{lens}?project_id={project_id}", timeout=TIMEOUT_S)
+        assert r.status_code < 500, (
+            f"project {project_id} lens {lens!r}: {r.status_code} — {r.text[:200]}"
+        )

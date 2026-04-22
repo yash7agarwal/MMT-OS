@@ -19,6 +19,7 @@ import {
 } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
 import type { ProductOSStatus, KnowledgeSummary, AgentSession, WorkItem } from '@/lib/types'
+import { ErrorBanner } from '@/components/ErrorBanner'
 
 const AGENTS = [
   {
@@ -79,6 +80,7 @@ export default function IntelligencePage({ params }: { params: { id: string } })
   const [sessions, setSessions] = useState<AgentSession[]>([])
   const [loading, setLoading] = useState(true)
   const [runningAgent, setRunningAgent] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
   const fetchAll = useCallback(async () => {
     try {
@@ -90,7 +92,10 @@ export default function IntelligencePage({ params }: { params: { id: string } })
       setStatus(s)
       setWorkItems(items)
       setSessions(sess)
-    } catch {}
+      setError(null)
+    } catch (err) {
+      setError((err as Error).message || String(err))
+    }
     setLoading(false)
   }, [projectId])
 
@@ -169,6 +174,7 @@ export default function IntelligencePage({ params }: { params: { id: string } })
 
   return (
     <div className="space-y-4">
+      {error && <ErrorBanner message={error} />}
       {/* Page intro + run all */}
       <div className="flex items-center justify-between">
         <p className="text-sm text-zinc-500">

@@ -15,6 +15,7 @@ import {
   ArrowSquareOut,
 } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
+import { ErrorBanner } from '@/components/ErrorBanner'
 
 const LENS_META: Record<string, { icon: typeof Palette; label: string; question: string }> = {
   product_craft: { icon: Palette, label: 'Product Craft', question: 'How good is their product execution?' },
@@ -84,16 +85,18 @@ export default function LensDetailPage({
   const lensName = params.lens
   const [data, setData] = useState<LensDetailData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<number, boolean>>({})
 
   const meta = LENS_META[lensName]
   const Icon = meta?.icon ?? Compass
 
   useEffect(() => {
+    setError(null)
     api
       .lensDetail(projectId, lensName)
       .then(setData)
-      .catch(() => {})
+      .catch((err: Error) => setError(err.message || String(err)))
       .finally(() => setLoading(false))
   }, [projectId, lensName])
 
@@ -126,6 +129,8 @@ export default function LensDetailPage({
       {meta && (
         <p className="text-zinc-500 text-sm mb-6 ml-9">{meta.question}</p>
       )}
+
+      {error && <div className="mb-4"><ErrorBanner message={error} /></div>}
 
       {!data || data.entities.length === 0 ? (
         <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-12 text-center">

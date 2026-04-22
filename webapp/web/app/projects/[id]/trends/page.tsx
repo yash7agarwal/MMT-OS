@@ -17,6 +17,7 @@ import {
   Trash,
 } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
+import { ErrorBanner } from '@/components/ErrorBanner'
 
 interface Observation {
   id: number
@@ -237,13 +238,17 @@ export default function TrendsPage({ params }: { params: { id: string } }) {
   const projectId = parseInt(params.id, 10)
   const [trends, setTrends] = useState<Trend[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [filter, setFilter] = useState('all')
 
   useEffect(() => {
     let cancelled = false
+    setError(null)
     api.trendsView(projectId).then((data) => {
       if (!cancelled) setTrends(data.trends || [])
-    }).catch(() => {}).finally(() => {
+    }).catch((err: Error) => {
+      if (!cancelled) setError(err.message || String(err))
+    }).finally(() => {
       if (!cancelled) setLoading(false)
     })
     return () => { cancelled = true }
@@ -261,6 +266,10 @@ export default function TrendsPage({ params }: { params: { id: string } }) {
         <div className="text-zinc-600 text-sm">Loading trends...</div>
       </div>
     )
+  }
+
+  if (error) {
+    return <ErrorBanner message={error} />
   }
 
   if (trends.length === 0) {

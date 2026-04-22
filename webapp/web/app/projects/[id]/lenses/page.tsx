@@ -13,6 +13,7 @@ import {
   Compass,
 } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
+import { ErrorBanner } from '@/components/ErrorBanner'
 
 const LENS_META: Record<string, { icon: typeof Palette; label: string; question: string }> = {
   product_craft: { icon: Palette, label: 'Product Craft', question: 'How good is their product execution?' },
@@ -41,12 +42,14 @@ export default function LensMatrixPage({ params }: { params: { id: string } }) {
   const projectId = parseInt(params.id, 10)
   const [data, setData] = useState<LensMatrixData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    setError(null)
     api
       .lensMatrix(projectId)
       .then(setData)
-      .catch(() => {})
+      .catch((err: Error) => setError(err.message || String(err)))
       .finally(() => setLoading(false))
   }, [projectId])
 
@@ -78,6 +81,8 @@ export default function LensMatrixPage({ params }: { params: { id: string } }) {
       <p className="text-zinc-500 text-sm mt-1 mb-6">
         Analyze competitors through different strategic dimensions
       </p>
+
+      {error && <div className="mb-4"><ErrorBanner message={error} /></div>}
 
       {!hasData ? (
         <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-12 text-center">
