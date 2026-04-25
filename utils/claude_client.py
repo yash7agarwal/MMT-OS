@@ -200,7 +200,10 @@ def ask_with_tools(
                     model=model, max_tokens=max_tokens, retries=retries,
                 )
             except Exception as gemini_err:
-                _logger.error(f"[claude] Gemini fallback ALSO failed: {gemini_err}", exc_info=True)
+                # Gemini's own ask_with_tools already attempts a Groq fallback
+                # internally before raising, so this branch only fires when
+                # both Gemini AND Groq exhausted. Re-raise.
+                _logger.error(f"[claude] Gemini+Groq fallback ALSO failed: {gemini_err}", exc_info=True)
                 raise gemini_err
         raise
     except anthropic.RateLimitError:

@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, PlainSerializer
+from pydantic import BaseModel, ConfigDict, PlainSerializer, model_validator
 
 
 def _serialize_utc(value: UTCDatetime) -> str:
@@ -317,6 +317,22 @@ class AgentSessionOut(BaseModel):
     knowledge_added: int
     session_summary: str | None
     quality_score_json: dict | None = None
+    status: str = "in_progress"
+
+    @model_validator(mode="after")
+    def _derive_status(self):
+        # Derived from completed_at + items_failed so the API has a clean
+        # in_progress / completed / failed signal without a DB migration.
+        # `failed` only when the run finished AND zero items succeeded
+        # while at least one failed — matches how a user reads "did this
+        # session do anything useful?"
+        if self.completed_at is None:
+            self.status = "in_progress"
+        elif self.items_completed == 0 and self.items_failed > 0:
+            self.status = "failed"
+        else:
+            self.status = "completed"
+        return self
 
 
 class KnowledgeSummary(BaseModel):

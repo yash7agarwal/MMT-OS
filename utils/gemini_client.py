@@ -232,6 +232,20 @@ def ask_with_tools(
                 continue
             raise
 
+    # Gemini exhausted — try Groq as 3rd-tier fallback (free, 30 RPM, much
+     # fresher quota bucket). Avoids work-item failures when Gemini's free
+     # tier is rate-limited.
+    try:
+        from utils import groq_client
+        if groq_client.is_available():
+            logger.warning("[gemini] retries exhausted — falling back to Groq")
+            return groq_client.ask_with_tools(
+                messages=messages, tools=tools, system=system,
+                max_tokens=max_tokens, retries=retries,
+            )
+    except Exception as groq_err:
+        logger.error(f"[gemini] Groq fallback also failed: {groq_err}")
+
     raise RuntimeError(f"Gemini tool call failed after {retries} retries: {last_err}")
 
 

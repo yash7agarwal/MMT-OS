@@ -2,6 +2,21 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.15.3] — 2026-04-26 — Groq tool-use fallback + AgentSession status
+
+After v0.15.2 fixed search rate-limiting via Exa, the next bottleneck surfaced: Gemini's free tier (`gemini-flash-latest`, 15 RPM) was 429-ing on every synthesis call, leaving the agent stuck on `Gemini call failed after 3 retries`. v0.15.3 wires Groq Llama 3.3 70B (free, 30 RPM, 14,400 RPD — fresher quota bucket) as a 3rd-tier LLM fallback after Claude → Gemini, and fixes the always-null `AgentSession.status` field that was making the UI's "agent done?" indicator unreadable.
+
+### Added
+- `utils/groq_client.py::ask_with_tools` — OpenAI-compatible function-calling on Llama 3.3 70B, returns an Anthropic-shape `_FakeMessage` (reusing the shims from `gemini_client`) so the agent's tool-use loop is provider-agnostic. Smoke-tested locally: tool roundtrip returns the expected `tool_use` block.
+- `utils/gemini_client::ask_with_tools` — final fallback: when Gemini retries exhaust and `groq_client.is_available()`, calls Groq before raising. Logs `[gemini] retries exhausted — falling back to Groq`.
+- `webapp/api/schemas::AgentSessionOut.status` — derived field (no DB migration). `in_progress` when `completed_at IS NULL`, `failed` when zero items completed but ≥1 failed, `completed` otherwise.
+
+### Changed
+- LLM cascade is now Claude → Gemini → Groq (was Claude → Gemini → fail). Groq's free tier alone gives ~10× the daily headroom of Gemini's free tier, so this is the single largest robustness improvement to the agent loop since the typed-ResearchBrief work.
+
+### Why this isn't "switch primary to Claude" instead
+That would also fix the symptom but trade rate-limit failures for a Claude bill. v0.15.3 keeps the cost profile flat (all three free providers stay free) while extending the cliff before the agent runs out of LLM headroom.
+
 ## [0.15.2] — 2026-04-25 — Exa.ai search fallback
 
 Patch cut after a fresh project ("Platinum industries limited") returned 0 competitors despite agents reporting "completed". Root cause was the search cascade collapsing: Tavily's dev-tier key (`tvly-dev-`) hit its monthly quota → 432, Brave key wasn't set, and DuckDuckGo lite times out under load. Result: every research query returned zero sources, agents finished with "No relevant data found in search", competitors stayed empty.
