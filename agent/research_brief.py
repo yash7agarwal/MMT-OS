@@ -53,6 +53,13 @@ class ResearchBrief:
     project_description: str
     app_package: str | None
 
+    # Portfolio summary extracted from the project's homepage (one Claude
+    # call cached at process scope). Anchors EVERY downstream prompt on
+    # what the company actually does, instead of letting keyword-only
+    # queries drift into adjacent meanings (the "Platinum Industries the
+    # company" vs "platinum the metal" failure mode).
+    portfolio_summary: str | None = None
+
     # Anchors for seed generation.
     known_competitors: list[BriefEntityRef] = field(default_factory=list)
     recent_trends: list[BriefEntityRef] = field(default_factory=list)
@@ -102,10 +109,20 @@ class ResearchBrief:
             f"# Project brief — {self.project_name}",
             f"App package: {self.app_package or 'n/a'}",
             "",
-            "## Description",
+        ]
+        # Portfolio summary leads — it's the strongest grounding signal we
+        # have because it's extracted from the actual homepage. Includes
+        # the explicit "WHAT THIS COMPANY IS NOT" disambiguation block
+        # which is the load-bearing piece for keyword-collision cases.
+        if self.portfolio_summary:
+            lines.append("## Portfolio summary (extracted from homepage — authoritative)")
+            lines.append(self.portfolio_summary)
+            lines.append("")
+        lines.extend([
+            "## Description (user-typed)",
             self.project_description or "(no description)",
             "",
-        ]
+        ])
         if self.known_competitors:
             lines.append(f"## Known competitors ({len(self.known_competitors)})")
             for c in self.known_competitors[:MAX_COMPETITORS]:
@@ -245,11 +262,17 @@ def build_brief(db: Session, project_id: int) -> ResearchBrief:
     # Union the observation-age check with the persistent decay_state flags.
     stale_trend_canonicals = sorted(set(stale_trend_canonicals) | decay_flagged)
 
+    # Fetch portfolio summary from the project's homepage once per session.
+    # Cached at process scope so this only costs one LLM call per (url, name).
+    from agent.website_grounding import fetch_portfolio_summary
+    portfolio_summary = fetch_portfolio_summary(project.app_package, project.name)
+
     return ResearchBrief(
         project_id=project_id,
         project_name=project.name,
         project_description=project.description or "",
         app_package=project.app_package,
+        portfolio_summary=portfolio_summary,
         known_competitors=known_competitors,
         recent_trends=recent_trends,
         starred_canonicals=sorted(set(starred)),

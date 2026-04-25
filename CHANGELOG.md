@@ -2,6 +2,24 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.16.2] — 2026-04-26 — Website grounding: anchor research on what the company actually does
+
+User feedback after a "Platinum Industries" UAT: "a simple Claude/ChatGPT query would give detailed competitors — why is it such a difficult task?" Audit confirmed: of 70 entities the agent had created, ~50 were drift — platinum-the-metal mining commentary, news-industry decline trends, German scientific institutions, EU clean-air policy. The user had explicitly provided `platinumindustriesltd.com` as `app_package`, but the agent's query planner only saw the keyword "Platinum Industries" — never opened the URL. So queries like "Platinum Industries competitors" pulled platinum-metal commodity reports from Reuters, and the synthesizer dutifully extracted them.
+
+A simple Claude/ChatGPT query works because Claude reads the URL FIRST and grounds everything on what the company actually does. v0.16.2 gives the agent the same discipline.
+
+### Added
+- `agent/website_grounding.py` — `fetch_portfolio_summary(app_package, project_name) -> str | None`. Fetches the project's homepage (one-shot), feeds it to Claude with a strict structured prompt that returns: products/services, industry, target customers, geographic focus, **what this company is NOT** (the load-bearing disambiguation block), and likely competitors mentioned on the page. `lru_cache(32)` keyed by (url, project_name) so the LLM call only fires once per session per project.
+- `ResearchBrief.portfolio_summary: str | None` — populated by `build_brief()` automatically when `app_package` is set. Renders FIRST in `to_prompt_context()` so the planner sees authoritative grounding before the user-typed description.
+- `agent/efficient_researcher::research_industry_trends` — synthesis prompt now includes a `portfolio_block` that prepends the portfolio summary with the instruction: "if a finding contradicts this or comes from an unrelated industry, drop it."
+- `tests/test_website_grounding.py` — 4 tests pinning: empty url → None; `WHAT THIS COMPANY IS NOT` block must remain in prompt template; lru_cache wired; bare-domain URL normalized to `https://`.
+
+### Verified live
+Smoke-tested against `platinumindustriesltd.com` — Claude extracted: "Zinc/Calcium/Barium/Aluminium Stearates, PVC Hybrid™ Low Lead Stabilizer, PE/OPE Wax, Highstab™, Lubpack, CPVC Addpack" + the disambiguation: "NOT a platinum-metal mining company; NOT precious-metals investment fund; NOT jewelry; NOT related to the platinum commodity market." That disambiguation block is what the agent has been missing for every keyword-collision case.
+
+### Why this isn't just "tighten the prompt again"
+v0.16.0 already added the project name + DO-NOT-extract list to the synthesis prompt. That helped with the obvious self-references, but the synthesizer still didn't know what the company actually *does* — only what the user typed. With 30+ words of typed description, an LLM still has to guess. With the homepage as ground truth, it doesn't.
+
 ## [0.16.1] — 2026-04-26 — `/run/{agent_type}` returns 404 on unknown agent_type
 
 While verifying v0.16.0 end-to-end on a fresh project, every `POST /api/product-os/run/competitive_intel?project_id=X` returned `200 OK` and reported `"status": "started"` — but no session was ever created and no work occurred. The orchestrator's `run_agent_session("competitive_intel")` returned `{"status": "unknown_agent"}` because `competitive_intel` is a *leg* of the top-level `intel` agent, not a configured top-level agent_type itself. The route's background thread had a blanket `except Exception: pass` that swallowed this, leaving the caller with a fake-success response. Hours of debugging traced symptoms ("project 6 has 0 new entities!") that were really "the trigger was a no-op."

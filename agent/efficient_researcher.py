@@ -254,12 +254,21 @@ def research_industry_trends(
             + "\n- ".join(brief.dismissed_canonicals[:20])
         )
 
+    portfolio_block = ""
+    if getattr(brief, "portfolio_summary", None):
+        portfolio_block = (
+            "\nAUTHORITATIVE PORTFOLIO (extracted from the company's homepage — "
+            "this is what they ACTUALLY do; if a finding contradicts this or "
+            "comes from an unrelated industry, drop it):\n"
+            f"{brief.portfolio_summary}\n"
+        )
+
     synthesis_prompt = f"""You are a consumer insights researcher for {brief.project_name}.
 
 SUBJECT (this is the company you are researching FOR — do NOT extract it as a competitor or trend):
   Name: {brief.project_name}
   Description: {brief.project_description or '(no description)'}
-
+{portfolio_block}
 INFERRED INDUSTRY: {plan.inferred_industry or 'unknown'}
 {known_block}
 {dismissed_block}
