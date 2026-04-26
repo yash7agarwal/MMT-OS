@@ -2,6 +2,37 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.17.0] — 2026-04-26 — Downloadable executive reports (BCG/McKinsey-grade PDF + Excel)
+
+After v0.16.x closed the data-quality drift class, the natural next question was: *how does this turn into something a CEO can hand to their board?* v0.17.0 adds a full report-generation pipeline — PDF cover, executive summary, competitive landscape, 8 strategic-lens insight sections, regulatory + technology landscapes, impact cascades, evidence-anchored recommendations, methodology, and a sources appendix. Plus a 9-tab Excel for analyst deep-dive with hyperlinked sources on every observation.
+
+The whole pipeline runs through a single chokepoint with hallucination guards: every claim cites a source URL that's in scope; recommendations without citations are dropped before persistence. Claude Sonnet writes the prose; matplotlib renders the charts; WeasyPrint produces the PDF; openpyxl produces the Excel.
+
+### Added
+- `agent/report_snapshot.py` — deterministic KG snapshot (entities × types, lens matrix, impact graph, sources, sessions). `content_hash()` excludes timestamps + Loupe runs so re-runs and Loupe reachability don't bust the narrative cache.
+- `agent/report_synthesis.py` — six Claude Sonnet narrative functions: `executive_summary`, `competitive_landscape_framing`, `lens_insights_batch` (eight lenses in one call), `regulatory_framing`, `strategic_implications`, `recommendations` (returns `Recommendation(title, body, evidence_urls)`). Every function flows through `_gate_urls` which logs hallucinated citations; recommendations without an `evidence_refs` entry are dropped.
+- `agent/report_charts.py` — server-side matplotlib (Agg backend) producing three PNGs: lens × competitor heatmap, trend timeline, three-tier impact cascade tree. Empty-input gates return None so the template skips the section instead of rendering empty axes.
+- `agent/report_xlsx.py` — 9-tab `.xlsx` with hyperlinked source URLs on every observation row + ColorScaleRule heatmap on the lens matrix tab.
+- `agent/report_templates/report.html.j2` + `report.css` — print stylesheet with branded cover page, A4 margins, page-break discipline, Liberation Serif body + Liberation Sans tables, page numbers via `@page` rules.
+- `agent/report_generator.py` — orchestrator. Pulls snapshot, runs Loupe enrichment if reachable, checks the manifest cache by `content_hash`, calls synthesis only on miss, renders charts, renders PDF + Excel, persists manifest as a `KnowledgeArtifact(artifact_type='executive_report')`. `render_from_manifest()` is the cheap path used on download — no LLM calls.
+- `webapp/api/routes/reports.py` — four endpoints: `POST /api/reports/generate` (kicks off thread, returns `job_id`), `GET /api/reports/jobs/{job_id}` (poll progress), `GET /api/reports/{artifact_id}/download?format=pdf|xlsx` (stream binary), `GET /api/reports/recent` (list past reports).
+- `webapp/web/app/projects/[id]/reports/page.tsx` — new "Reports" tab listing past reports + Generate button.
+- `webapp/web/components/GenerateReportModal.tsx` — format-select modal with live progress display (queued → running → done) by polling `/jobs/{id}` every 2s.
+- `webapp/web/lib/api.ts` — `generateReport`, `reportJobStatus`, `recentReports`, `reportDownloadUrl` clients.
+- `tests/test_report_generator.py` — 12 tests pinning: snapshot determinism, hash excludes volatile fields, hash changes on real data shifts, URL gate detects hallucinated citations, recommendations without evidence are dropped, chart empty-input gates, xlsx 9-tab structure + hyperlinks. All pass; combined unit suite is now 53 tests.
+
+### Changed
+- `requirements.txt` — added `jinja2`, `weasyprint`, `openpyxl`, `matplotlib`. Adds ~50MB to the installed footprint.
+- `Dockerfile` — added `apt-get install libpango-1.0-0 libpangoft2-1.0-0 fonts-liberation` for WeasyPrint's Pango runtime + serif/sans fonts.
+- `webapp/api/main.py` — registered the reports router.
+- `webapp/web/app/projects/[id]/layout.tsx` — added Reports entry to the tab nav.
+
+### Why narrative is cached, binaries are regenerated
+The expensive part of a report is the six Claude calls (~$0.50–1.50 per fresh report). The cheap part is rendering HTML→PDF and writing an xlsx (~2s). So the manifest persists the synthesized narrative + recommendations; binaries are regenerated on every download from the cached narrative + a fresh KG snapshot. KG drift between manifest creation and download means the data tables refresh while the prose stays consistent — which is the right tradeoff for "I want to re-download what I just generated" UX. Fully consistent re-synthesis requires generating a new report (which checks the cache, finds a content_hash mismatch, and re-runs the LLM).
+
+### Why a job queue instead of synchronous response
+Generation takes 60–90s for a fresh report. Holding a request open that long is fragile (timeouts, mobile networks, Vercel edge runtime). The thread + `_jobs` dict pattern matches the existing `product_os.run_agent` setup. Multi-replica scaling needs Redis-backed jobs; documented in v0.17.2.
+
 ## [0.16.2] — 2026-04-26 — Website grounding: anchor research on what the company actually does
 
 User feedback after a "Platinum Industries" UAT: "a simple Claude/ChatGPT query would give detailed competitors — why is it such a difficult task?" Audit confirmed: of 70 entities the agent had created, ~50 were drift — platinum-the-metal mining commentary, news-industry decline trends, German scientific institutions, EU clean-air policy. The user had explicitly provided `platinumindustriesltd.com` as `app_package`, but the agent's query planner only saw the keyword "Platinum Industries" — never opened the URL. So queries like "Platinum Industries competitors" pulled platinum-metal commodity reports from Reuters, and the synthesizer dutifully extracted them.

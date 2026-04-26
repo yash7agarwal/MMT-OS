@@ -1,0 +1,335 @@
+/* Prism executive report — print stylesheet (v0.17.0).
+ *
+ * McKinsey/BCG-grade typography:
+ *  - Serif body for prose readability
+ *  - Sans-serif for tables, captions, labels
+ *  - Generous whitespace, conservative palette (zinc + emerald)
+ *  - Page-break discipline so sections don't get cut awkwardly
+ *
+ * Fonts: rely on system stack so no @font-face downloads needed at
+ * render time. WeasyPrint resolves these against fontconfig — Liberation
+ * Serif/Sans ship via the Dockerfile's `fonts-liberation` apt package.
+ */
+
+@page {
+  size: A4;
+  margin: 22mm 18mm 20mm 18mm;
+
+  @bottom-left {
+    content: "Prism · Confidential";
+    font-family: 'Liberation Sans', 'Helvetica', sans-serif;
+    font-size: 8pt;
+    color: #71717a;
+  }
+  @bottom-right {
+    content: "Page " counter(page) " of " counter(pages);
+    font-family: 'Liberation Sans', 'Helvetica', sans-serif;
+    font-size: 8pt;
+    color: #71717a;
+  }
+}
+
+@page :first {
+  margin: 0;
+  @bottom-left { content: ""; }
+  @bottom-right { content: ""; }
+}
+
+/* --- Globals --- */
+* { box-sizing: border-box; }
+
+html, body {
+  font-family: 'Liberation Serif', 'Georgia', serif;
+  font-size: 10.5pt;
+  line-height: 1.55;
+  color: #18181b;
+  margin: 0;
+  padding: 0;
+}
+
+/* Sans for everything that's not body prose */
+h1, h2, h3, h4, .label, .meta, table, .num, .badge, .source-list {
+  font-family: 'Liberation Sans', 'Helvetica', sans-serif;
+}
+
+/* --- Cover page --- */
+.cover {
+  page-break-after: always;
+  height: 297mm;
+  position: relative;
+  background: #09090b;
+  color: #f4f4f5;
+  padding: 0;
+}
+.cover-inner {
+  position: absolute;
+  top: 60mm;
+  left: 22mm;
+  right: 22mm;
+}
+.cover .brand-bar {
+  width: 24mm;
+  height: 2mm;
+  background: #10b981;
+  margin-bottom: 32mm;
+}
+.cover h1 {
+  font-family: 'Liberation Serif', 'Georgia', serif;
+  font-size: 38pt;
+  line-height: 1.1;
+  letter-spacing: -0.5pt;
+  margin: 0 0 12mm 0;
+  color: #f4f4f5;
+  font-weight: 400;
+}
+.cover .subtitle {
+  font-size: 13pt;
+  color: #a1a1aa;
+  letter-spacing: 0.3pt;
+  text-transform: uppercase;
+  font-family: 'Liberation Sans', sans-serif;
+  margin-bottom: 24mm;
+}
+.cover .meta {
+  font-size: 10pt;
+  color: #71717a;
+  letter-spacing: 0.4pt;
+  border-top: 0.5pt solid #27272a;
+  padding-top: 4mm;
+}
+.cover .meta-row { display: flex; justify-content: space-between; margin-top: 2mm; }
+.cover-footer {
+  position: absolute;
+  bottom: 22mm;
+  left: 22mm;
+  right: 22mm;
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 9pt;
+  color: #52525b;
+  border-top: 0.5pt solid #27272a;
+  padding-top: 5mm;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* --- TOC --- */
+.toc { page-break-after: always; }
+.toc h2 {
+  font-size: 22pt;
+  font-weight: 400;
+  letter-spacing: -0.3pt;
+  margin-top: 0;
+  margin-bottom: 12mm;
+}
+.toc ol {
+  list-style: none;
+  padding: 0;
+  counter-reset: toc;
+}
+.toc li {
+  counter-increment: toc;
+  display: flex;
+  align-items: baseline;
+  padding: 3mm 0;
+  border-bottom: 0.3pt solid #e4e4e7;
+  font-size: 10.5pt;
+}
+.toc li::before {
+  content: counter(toc, decimal-leading-zero);
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 9pt;
+  color: #71717a;
+  width: 12mm;
+  letter-spacing: 1pt;
+}
+.toc .toc-title { flex: 1; }
+.toc .toc-page {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 9pt;
+  color: #71717a;
+}
+
+/* --- Section headings --- */
+section { page-break-before: always; }
+section.no-break { page-break-before: auto; }
+
+h2.section-title {
+  font-size: 22pt;
+  font-weight: 400;
+  letter-spacing: -0.3pt;
+  color: #09090b;
+  margin: 0 0 2mm 0;
+  padding-bottom: 4mm;
+  border-bottom: 0.5pt solid #d4d4d8;
+}
+.section-meta {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 8.5pt;
+  color: #71717a;
+  letter-spacing: 0.5pt;
+  text-transform: uppercase;
+  margin-bottom: 8mm;
+}
+h3 {
+  font-family: 'Liberation Serif', 'Georgia', serif;
+  font-size: 14pt;
+  font-weight: 400;
+  margin: 8mm 0 3mm 0;
+  color: #18181b;
+}
+h4 {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 10pt;
+  font-weight: 700;
+  letter-spacing: 0.3pt;
+  text-transform: uppercase;
+  color: #52525b;
+  margin: 6mm 0 2mm 0;
+}
+
+/* --- Prose --- */
+p { margin: 0 0 3mm 0; }
+.lede {
+  font-size: 11.5pt;
+  line-height: 1.55;
+  color: #27272a;
+  margin-bottom: 6mm;
+  border-left: 1pt solid #10b981;
+  padding-left: 5mm;
+}
+
+/* --- Tables (analyst-grade) --- */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 4mm 0;
+  font-size: 9pt;
+}
+th, td {
+  text-align: left;
+  padding: 2.2mm 2.5mm;
+  vertical-align: top;
+  border-bottom: 0.3pt solid #e4e4e7;
+}
+th {
+  font-size: 8pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4pt;
+  color: #52525b;
+  border-bottom: 0.6pt solid #18181b;
+  background: #fafafa;
+}
+tr:nth-child(even) td { background: #fafafa; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Lens heat-map table */
+.lens-table td.zero { color: #d4d4d8; }
+.lens-table td.heat-low { background: #ecfdf5; }
+.lens-table td.heat-med { background: #a7f3d0; }
+.lens-table td.heat-high { background: #10b981; color: white; font-weight: 600; }
+
+/* --- Charts --- */
+.chart {
+  margin: 6mm 0;
+  text-align: center;
+}
+.chart img {
+  max-width: 100%;
+  border: 0.3pt solid #e4e4e7;
+  padding: 3mm;
+  background: white;
+}
+.chart .caption {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 8.5pt;
+  color: #71717a;
+  margin-top: 2mm;
+  font-style: italic;
+}
+
+/* --- Recommendation cards --- */
+.rec {
+  page-break-inside: avoid;
+  margin: 5mm 0;
+  padding: 5mm 6mm;
+  border-left: 2pt solid #10b981;
+  background: #fafafa;
+}
+.rec .rec-num {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 8pt;
+  letter-spacing: 1pt;
+  color: #10b981;
+  font-weight: 700;
+}
+.rec h3 {
+  margin: 1mm 0 2mm 0;
+  font-size: 13pt;
+  color: #09090b;
+}
+.rec p { margin-bottom: 2mm; }
+.rec .evidence {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 8pt;
+  color: #71717a;
+  margin-top: 2mm;
+  word-break: break-all;
+}
+.rec .evidence a { color: #047857; text-decoration: none; }
+
+/* --- Source links --- */
+a { color: #047857; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* --- Empty-state inline --- */
+.empty {
+  font-style: italic;
+  color: #71717a;
+  font-size: 9.5pt;
+  margin: 4mm 0;
+  padding: 3mm 4mm;
+  background: #fafafa;
+  border: 0.3pt dashed #d4d4d8;
+}
+
+/* --- Appendix --- */
+.appendix table { font-size: 8.5pt; }
+.appendix td.url { word-break: break-all; max-width: 60mm; }
+
+/* --- Portfolio block (the "what this company is NOT" disambiguation) --- */
+.portfolio {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 9.5pt;
+  line-height: 1.5;
+  background: #f4f4f5;
+  border-left: 2pt solid #18181b;
+  padding: 4mm 5mm;
+  margin: 4mm 0;
+  white-space: pre-wrap;
+}
+
+/* --- Methodology --- */
+.method-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 4mm;
+  margin: 4mm 0;
+}
+.method-meta .stat {
+  border: 0.3pt solid #e4e4e7;
+  padding: 4mm;
+}
+.method-meta .stat .num-big {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 22pt;
+  font-weight: 300;
+  color: #09090b;
+  display: block;
+}
+.method-meta .stat .label {
+  font-size: 8pt;
+  letter-spacing: 0.5pt;
+  text-transform: uppercase;
+  color: #71717a;
+}

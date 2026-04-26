@@ -1,0 +1,327 @@
+{# Prism executive report — main template (v0.17.0).
+   Receives `ctx` dict with: snapshot, narrative, charts (data URIs),
+   recommendations, generated_at_human, version. Composes a single-file HTML
+   that WeasyPrint renders to PDF. CSS is inlined via `<style>` so the file
+   is self-contained — no external asset resolution at render time. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>{{ ctx.snapshot.project_name }} — Executive Report</title>
+<style>{{ ctx.css }}</style>
+</head>
+<body>
+
+{# ---------- Cover ---------- #}
+<div class="cover">
+  <div class="cover-inner">
+    <div class="brand-bar"></div>
+    <div class="subtitle">Executive Intelligence Report</div>
+    <h1>{{ ctx.snapshot.project_name }}</h1>
+    <div class="meta">
+      <div class="meta-row"><span>Generated</span><span>{{ ctx.generated_at_human }}</span></div>
+      <div class="meta-row"><span>Snapshot</span><span>{{ ctx.snapshot.content_hash }}</span></div>
+      <div class="meta-row"><span>Sources cited</span><span>{{ ctx.snapshot.stats.source_count }}</span></div>
+      <div class="meta-row"><span>Observations</span><span>{{ ctx.snapshot.stats.observation_count }}</span></div>
+    </div>
+  </div>
+  <div class="cover-footer">
+    <span>Prepared by Prism · {{ ctx.version }}</span>
+    <span>CONFIDENTIAL</span>
+  </div>
+</div>
+
+{# ---------- TOC ---------- #}
+<section class="toc no-break">
+  <h2>Contents</h2>
+  <ol>
+    <li><span class="toc-title">Executive summary</span><span class="toc-page">1</span></li>
+    <li><span class="toc-title">Company snapshot</span><span class="toc-page">2</span></li>
+    <li><span class="toc-title">Competitive landscape</span><span class="toc-page">3</span></li>
+    <li><span class="toc-title">Strategic lenses</span><span class="toc-page">4</span></li>
+    <li><span class="toc-title">Industry trends</span><span class="toc-page">·</span></li>
+    <li><span class="toc-title">Regulatory landscape</span><span class="toc-page">·</span></li>
+    <li><span class="toc-title">Technology landscape</span><span class="toc-page">·</span></li>
+    <li><span class="toc-title">Strategic implications</span><span class="toc-page">·</span></li>
+    {% if ctx.snapshot.loupe_runs %}
+    <li><span class="toc-title">Product validation (UAT)</span><span class="toc-page">·</span></li>
+    {% endif %}
+    <li><span class="toc-title">Recommendations</span><span class="toc-page">·</span></li>
+    <li><span class="toc-title">Methodology</span><span class="toc-page">·</span></li>
+    <li><span class="toc-title">Appendix — sources &amp; observations</span><span class="toc-page">·</span></li>
+  </ol>
+</section>
+
+{# ---------- 1. Executive summary ---------- #}
+<section>
+  <h2 class="section-title">Executive summary</h2>
+  <div class="section-meta">Section 01 · {{ ctx.snapshot.stats.competitor_count }} competitors · {{ ctx.snapshot.stats.trend_count }} trends · {{ ctx.snapshot.stats.observation_count }} observations</div>
+  <div class="lede">{{ ctx.narrative.executive_summary }}</div>
+</section>
+
+{# ---------- 2. Company snapshot ---------- #}
+<section>
+  <h2 class="section-title">Company snapshot</h2>
+  <div class="section-meta">Section 02 · derived from homepage and project metadata</div>
+  {% if ctx.snapshot.portfolio_summary %}
+    <div class="portfolio">{{ ctx.snapshot.portfolio_summary }}</div>
+  {% else %}
+    <div class="empty">Homepage portfolio extraction unavailable. Project description: <em>{{ ctx.snapshot.project_description or '(not provided)' }}</em></div>
+  {% endif %}
+</section>
+
+{# ---------- 3. Competitive landscape ---------- #}
+<section>
+  <h2 class="section-title">Competitive landscape</h2>
+  <div class="section-meta">Section 03 · {{ ctx.snapshot.competitors|length }} competitors tracked</div>
+  <p>{{ ctx.narrative.competitive_framing }}</p>
+
+  {% if ctx.charts.lens_heatmap %}
+    <div class="chart">
+      <img src="{{ ctx.charts.lens_heatmap }}" alt="Lens heatmap" />
+      <div class="caption">Strategic lens coverage by competitor (cell value = observation count)</div>
+    </div>
+  {% endif %}
+
+  {% if ctx.snapshot.competitors %}
+    <h3>Competitor profiles</h3>
+    <table>
+      <thead>
+        <tr><th>Competitor</th><th>Description</th><th class="num">Confidence</th><th class="num">Last updated</th></tr>
+      </thead>
+      <tbody>
+        {% for c in ctx.snapshot.competitors %}
+        <tr>
+          <td><strong>{{ c.name }}</strong></td>
+          <td>{{ (c.description or '—')[:160] }}</td>
+          <td class="num">{{ '%.2f'|format(c.confidence or 0) }}</td>
+          <td class="num">{{ (c.last_updated_at or '—')[:10] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="empty">No competitors tracked yet.</div>
+  {% endif %}
+</section>
+
+{# ---------- 4. Strategic lenses ---------- #}
+<section>
+  <h2 class="section-title">Strategic lenses</h2>
+  <div class="section-meta">Section 04 · 8 lenses × {{ ctx.snapshot.competitors|length }} competitors</div>
+  {% for lens, competitors_in_lens in ctx.snapshot.lens_detail.items() %}
+    <h3>{{ lens.replace('_', ' ').title() }}</h3>
+    <p>{{ ctx.narrative.lens_insights.get(lens, '(no insight synthesized)') }}</p>
+    {% set total_obs = competitors_in_lens|sum(attribute='observations', start=[])|length %}
+    {% if total_obs > 0 %}
+      <table>
+        <thead><tr><th>Entity</th><th>Observation</th><th>Source</th></tr></thead>
+        <tbody>
+          {% for entity in competitors_in_lens[:8] %}
+            {% for obs in entity.observations[:3] %}
+            <tr>
+              <td><strong>{{ entity.name }}</strong></td>
+              <td>{{ (obs.content or '')[:200] }}</td>
+              <td>{% if obs.source_url %}<a href="{{ obs.source_url }}">view</a>{% else %}—{% endif %}</td>
+            </tr>
+            {% endfor %}
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="empty">No observations recorded for this lens yet.</div>
+    {% endif %}
+  {% endfor %}
+</section>
+
+{# ---------- 5. Industry trends ---------- #}
+<section>
+  <h2 class="section-title">Industry trends</h2>
+  <div class="section-meta">Section 05 · {{ ctx.snapshot.trends|length }} trends categorized</div>
+
+  {% if ctx.charts.trend_timeline %}
+    <div class="chart">
+      <img src="{{ ctx.charts.trend_timeline }}" alt="Trend timeline" />
+      <div class="caption">Distribution of trends across past / present / emerging / future bands</div>
+    </div>
+  {% endif %}
+
+  {% if ctx.snapshot.trends %}
+    <table>
+      <thead>
+        <tr><th>Trend</th><th>Timeline</th><th>Category</th><th>Source</th></tr>
+      </thead>
+      <tbody>
+        {% for t in ctx.snapshot.trends %}
+        <tr>
+          <td><strong>{{ t.name[:80] }}</strong>{% if t.description %}<br /><span style="font-size:8pt;color:#71717a">{{ t.description[:140] }}</span>{% endif %}</td>
+          <td>{{ t.timeline or '—' }}</td>
+          <td>{{ t.category or '—' }}</td>
+          <td>
+            {% set first_obs = (t.observations or [])|first %}
+            {% if first_obs and first_obs.source_url %}<a href="{{ first_obs.source_url }}">view</a>{% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="empty">No industry trends discovered yet.</div>
+  {% endif %}
+</section>
+
+{# ---------- 6. Regulatory landscape ---------- #}
+<section>
+  <h2 class="section-title">Regulatory landscape</h2>
+  <div class="section-meta">Section 06 · {{ ctx.snapshot.regulations|length }} regulations tracked</div>
+  <p>{{ ctx.narrative.regulatory_framing }}</p>
+  {% if ctx.snapshot.regulations %}
+    <table>
+      <thead><tr><th>Regulation</th><th>Description</th></tr></thead>
+      <tbody>
+        {% for r in ctx.snapshot.regulations %}
+        <tr>
+          <td><strong>{{ r.name[:80] }}</strong></td>
+          <td>{{ (r.description or '—')[:200] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="empty">No regulations tracked.</div>
+  {% endif %}
+</section>
+
+{# ---------- 7. Technology landscape ---------- #}
+<section>
+  <h2 class="section-title">Technology landscape</h2>
+  <div class="section-meta">Section 07 · {{ ctx.snapshot.technologies|length }} technologies tracked</div>
+  {% if ctx.snapshot.technologies %}
+    <table>
+      <thead><tr><th>Technology</th><th>Description</th></tr></thead>
+      <tbody>
+        {% for t in ctx.snapshot.technologies %}
+        <tr><td><strong>{{ t.name[:80] }}</strong></td><td>{{ (t.description or '—')[:240] }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="empty">No technology entities tracked.</div>
+  {% endif %}
+</section>
+
+{# ---------- 8. Strategic implications ---------- #}
+<section>
+  <h2 class="section-title">Strategic implications</h2>
+  <div class="section-meta">Section 08 · 2nd- and 3rd-order effects</div>
+  <p>{{ ctx.narrative.strategic_implications }}</p>
+  {% if ctx.charts.impact_cascade %}
+    <div class="chart">
+      <img src="{{ ctx.charts.impact_cascade }}" alt="Impact cascade" />
+      <div class="caption">Trend → effect → company causality graph</div>
+    </div>
+  {% endif %}
+</section>
+
+{# ---------- 9. Loupe UAT (optional) ---------- #}
+{% if ctx.snapshot.loupe_runs %}
+<section>
+  <h2 class="section-title">Product validation (UAT)</h2>
+  <div class="section-meta">Section 09 · {{ ctx.snapshot.loupe_runs|length }} UAT runs from Loupe</div>
+  <table>
+    <thead><tr><th>Plan</th><th>Run date</th><th>Pass</th><th>Fail</th></tr></thead>
+    <tbody>
+      {% for r in ctx.snapshot.loupe_runs[:20] %}
+      <tr>
+        <td>{{ (r.plan_name or '—')[:60] }}</td>
+        <td>{{ (r.run_at or '—')[:10] }}</td>
+        <td class="num">{{ r.passed or 0 }}</td>
+        <td class="num">{{ r.failed or 0 }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+{# ---------- 10. Recommendations ---------- #}
+<section>
+  <h2 class="section-title">Recommendations</h2>
+  <div class="section-meta">Section {{ '10' if not ctx.snapshot.loupe_runs else '10' }} · {{ ctx.recommendations|length }} prescriptive moves, evidence-anchored</div>
+  {% if ctx.recommendations %}
+    {% for rec in ctx.recommendations %}
+    <div class="rec">
+      <div class="rec-num">RECOMMENDATION {{ '%02d'|format(loop.index) }}</div>
+      <h3>{{ rec.title }}</h3>
+      <p>{{ rec.body }}</p>
+      <div class="evidence">Evidence: {% for url in rec.evidence_urls %}<a href="{{ url }}">{{ url[:80] }}</a>{% if not loop.last %} · {% endif %}{% endfor %}</div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <div class="empty">No recommendations synthesized — insufficient evidence in the knowledge graph.</div>
+  {% endif %}
+</section>
+
+{# ---------- 11. Methodology ---------- #}
+<section>
+  <h2 class="section-title">Methodology</h2>
+  <div class="section-meta">Section 11 · how Prism gathered this data</div>
+  <p>This report was generated from the Prism knowledge graph, populated by autonomous research agents over {{ ctx.snapshot.stats.session_count }} sessions. Each finding cites a source URL; the synthesized narrative passes through a hallucination guard that drops any claim without an in-scope citation.</p>
+  <div class="method-meta">
+    <div class="stat">
+      <span class="num-big">{{ ctx.snapshot.stats.session_count }}</span>
+      <span class="label">Agent sessions</span>
+    </div>
+    <div class="stat">
+      <span class="num-big">{{ ctx.snapshot.stats.observation_count }}</span>
+      <span class="label">Observations</span>
+    </div>
+    <div class="stat">
+      <span class="num-big">{{ ctx.snapshot.stats.source_count }}</span>
+      <span class="label">Unique sources</span>
+    </div>
+  </div>
+  {% if ctx.snapshot.agent_sessions %}
+    <h4>Recent sessions</h4>
+    <table>
+      <thead><tr><th>Agent</th><th>Started</th><th class="num">Items completed</th><th class="num">Knowledge added</th></tr></thead>
+      <tbody>
+        {% for s in ctx.snapshot.agent_sessions[:15] %}
+        <tr>
+          <td>{{ s.agent_type }}</td>
+          <td>{{ (s.started_at or '—')[:16].replace('T', ' ') }}</td>
+          <td class="num">{{ s.items_completed }}</td>
+          <td class="num">{{ s.knowledge_added }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+</section>
+
+{# ---------- Appendix ---------- #}
+<section class="appendix">
+  <h2 class="section-title">Appendix · sources &amp; observations</h2>
+  <div class="section-meta">Every URL Prism cited, ranked by citation frequency</div>
+
+  <h3>Sources by frequency</h3>
+  {% if ctx.snapshot.source_index %}
+    <table>
+      <thead><tr><th class="num">Cites</th><th>Host</th><th>URL</th></tr></thead>
+      <tbody>
+        {% for s in ctx.snapshot.source_index %}
+        <tr>
+          <td class="num">{{ s.citations }}</td>
+          <td>{{ s.host or '—' }}</td>
+          <td class="url"><a href="{{ s.url }}">{{ s.url }}</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <div class="empty">No sources recorded.</div>
+  {% endif %}
+</section>
+
+</body>
+</html>

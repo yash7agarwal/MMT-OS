@@ -252,4 +252,23 @@ export const api = {
       timeoutMs: 60_000,
     }),
 
+  // ---- Executive reports (v0.17.0) ----
+  generateReport: (projectId: number, formats: string[] = ['pdf', 'xlsx'], includeLoupe = true) =>
+    request<{ job_id: string; status: string; project_id: number; formats: string[] }>(
+      `/api/reports/generate?project_id=${projectId}&formats=${formats.join(',')}&include_loupe=${includeLoupe}`,
+      { method: 'POST', timeoutMs: 30_000 },
+    ),
+  reportJobStatus: (jobId: string) =>
+    request<{
+      job_id: string; project_id: number; status: 'queued' | 'running' | 'done' | 'failed';
+      progress: string; artifact_id: number | null; error: string | null; started_at: string;
+    }>(`/api/reports/jobs/${jobId}`),
+  recentReports: (projectId: number) =>
+    request<Array<{
+      artifact_id: number; title: string; generated_at: string;
+      content_hash: string | null; stats: Record<string, number>;
+      rec_count: number; loupe_runs_included: number;
+    }>>(`/api/reports/recent?project_id=${projectId}`),
+  reportDownloadUrl: (artifactId: number, format: 'pdf' | 'xlsx') =>
+    `/api/reports/${artifactId}/download?format=${format}`,
 }

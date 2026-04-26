@@ -9,6 +9,7 @@ import {
   Brain,
   Binoculars,
   ChatCircle,
+  FileText,
   Funnel,
   GitBranch,
   TrendUp,
@@ -24,6 +25,7 @@ const tabs = [
   { label: 'Impacts', href: '/impacts', icon: GitBranch },
   { label: 'Ask', href: '/ask', icon: ChatCircle },
   { label: 'Intelligence', href: '/intelligence', icon: Brain },
+  { label: 'Reports', href: '/reports', icon: FileText },
 ]
 
 export default function ProjectLayout({

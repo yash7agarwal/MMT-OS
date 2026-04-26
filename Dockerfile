@@ -13,6 +13,14 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# WeasyPrint (v0.17.0 report generator) needs Pango for HTML→PDF.
+# libpango-1.0-0 + libpangoft2-1.0-0 = ~5MB on Debian slim; everything
+# else (fonts, harfbuzz) comes in as transitive apt deps.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 libpangoft2-1.0-0 \
+        fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
 # Full deps — covers both API (fastapi/uvicorn/sqlalchemy) and bot
 # (python-telegram-bot/httpx), plus shared anthropic/gemini clients.
 COPY requirements.txt .

@@ -20,7 +20,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from webapp.api.db import init_db
-from webapp.api.routes import cost, digest, edges, knowledge, plans, prd, product_os, projects, screens, xproj
+from webapp.api.routes import cost, digest, edges, knowledge, plans, prd, product_os, projects, reports, screens, xproj
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +31,7 @@ logging.basicConfig(
 app = FastAPI(
     title="Prism API",
     description="Product intelligence platform — competitive research, trends, impacts. UAT lives in Loupe.",
-    version="0.16.2",
+    version="0.17.0",
 )
 
 # CORS — locals for dev, Vercel + is-a.dev for prod. Extra comma-separated
@@ -69,6 +69,7 @@ app.include_router(cost.router)
 app.include_router(digest.router)
 app.include_router(xproj.router)
 app.include_router(prd.router)
+app.include_router(reports.router)
 
 
 @app.on_event("startup")
