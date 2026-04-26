@@ -2,6 +2,13 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.17.1] — 2026-04-27 — Vercel auto-deploy wired
+
+After v0.17.0 shipped to GitHub, the Vercel-hosted frontend (`prism-three-alpha.vercel.app`) was 6 days stale because the project had no git connection — pushes to `main` weren't triggering builds. Same root cause as the Railway auto-deploy gap surfaced earlier this session.
+
+### Fixed
+- Installed Vercel's GitHub App on `yash7agarwal/prism` and ran `vercel git connect`. Project now wired to `main` branch; future commits auto-deploy. This commit is the first under the new flow — its successful production build is the verification.
+
 ## [0.17.0] — 2026-04-26 — Downloadable executive reports (BCG/McKinsey-grade PDF + Excel)
 
 After v0.16.x closed the data-quality drift class, the natural next question was: *how does this turn into something a CEO can hand to their board?* v0.17.0 adds a full report-generation pipeline — PDF cover, executive summary, competitive landscape, 8 strategic-lens insight sections, regulatory + technology landscapes, impact cascades, evidence-anchored recommendations, methodology, and a sources appendix. Plus a 9-tab Excel for analyst deep-dive with hyperlinked sources on every observation.
