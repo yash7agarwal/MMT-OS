@@ -66,16 +66,53 @@ def _gate_urls(text: str, source_pool: set[str]) -> tuple[str, list[str]]:
 _FALLBACK = "(insufficient evidence to synthesize this section — see appendix tables for raw data)"
 
 
-def _ask(prompt: str, max_tokens: int = 800, system: str = "") -> str:
-    """Wrap claude_client.ask with our anti-hallucination system prompt."""
-    base_system = (
-        "You are a McKinsey/BCG senior consultant writing for a CEO/board audience. "
-        "Tone: confident, specific, evidence-led. Avoid generic platitudes. "
-        "CRITICAL: every factual claim must cite a source URL from the data provided. "
-        "If you cannot find evidence for a claim, omit the claim — do not fabricate. "
-        "If you cannot synthesize anything useful from the data, say so plainly."
-    )
-    full_system = f"{base_system}\n\n{system}" if system else base_system
+# v0.18.0: tier verification by claim type instead of forcing URL citations
+# on every section. Per the user's "zero hallucination ≠ always cite URL"
+# correction, common-knowledge sections (industry framing, well-known
+# competitive landscape) can answer from training data; only dated /
+# quantified / niche claims need strict source-URL grounding.
+TIER_COMMON_KNOWLEDGE = "common_knowledge"
+TIER_NEEDS_GROUNDING = "needs_grounding"
+
+# Per-section tier defaults. The split reflects: framing + recommendations
+# can lean on LLM knowledge; lens insights + regulatory facts cannot
+# because they're domain-specific and time-sensitive.
+TIER_BY_SECTION: dict[str, str] = {
+    "executive_summary": TIER_COMMON_KNOWLEDGE,
+    "competitive_framing": TIER_COMMON_KNOWLEDGE,
+    "lens_insights": TIER_NEEDS_GROUNDING,
+    "regulatory_framing": TIER_NEEDS_GROUNDING,
+    "strategic_implications": TIER_COMMON_KNOWLEDGE,
+    "recommendations": TIER_NEEDS_GROUNDING,
+}
+
+
+_SYSTEM_GROUNDED = (
+    "You are a McKinsey/BCG senior consultant writing for a CEO/board audience. "
+    "Tone: confident, specific, evidence-led. Avoid generic platitudes. "
+    "CRITICAL: every factual claim must cite a source URL from the data provided. "
+    "If you cannot find evidence for a claim, omit the claim — do not fabricate. "
+    "If you cannot synthesize anything useful from the data, say so plainly."
+)
+
+_SYSTEM_COMMON = (
+    "You are a McKinsey/BCG senior consultant writing for a CEO/board audience. "
+    "Tone: confident, specific, evidence-led. Avoid generic platitudes. "
+    "Use your training knowledge for well-established industry facts and competitor "
+    "identification. Cite source URLs from the provided data WHEN they specifically "
+    "back a quantified or recent claim — but you do NOT need to cite URLs for "
+    "well-known facts the reader can independently verify (e.g. that Yatra is an "
+    "online travel agency, that PVC stabilizers are used in plastic manufacturing). "
+    "DO NOT fabricate specific numbers, percentages, dates, or quotes. If a "
+    "specific datum isn't in the provided data and you don't reliably know it, "
+    "omit it or describe directionally (e.g. 'meaningful share' instead of '34%')."
+)
+
+
+def _ask(prompt: str, max_tokens: int = 800, system: str = "", tier: str = TIER_NEEDS_GROUNDING) -> str:
+    """Wrap claude_client.ask with the tier-appropriate anti-hallucination system prompt."""
+    base = _SYSTEM_COMMON if tier == TIER_COMMON_KNOWLEDGE else _SYSTEM_GROUNDED
+    full_system = f"{base}\n\n{system}" if system else base
     try:
         return ask(prompt, max_tokens=max_tokens, system=full_system, model=DEFAULT_MODEL)
     except Exception as exc:
@@ -129,7 +166,7 @@ Constraints:
 - Specific names and numbers wherever the data supports them.
 - Do not invent metrics that aren't in the data above."""
 
-    text = _ask(prompt, max_tokens=600)
+    text = _ask(prompt, max_tokens=600, tier=TIER_BY_SECTION["executive_summary"])
     text, _hallucinated = _gate_urls(text, source_pool)
     return text.strip() or _FALLBACK
 
@@ -173,7 +210,7 @@ WRITE:
 
 Constraints: prose paragraphs, no bullet lists, 200 words MAX, no fabricated facts."""
 
-    text = _ask(prompt, max_tokens=500)
+    text = _ask(prompt, max_tokens=500, tier=TIER_BY_SECTION["competitive_framing"])
     text, _hallucinated = _gate_urls(text, source_pool)
     return text.strip() or _FALLBACK
 
@@ -233,7 +270,7 @@ Each insight should:
 
 Return ONLY the JSON, no other text."""
 
-    raw = _ask(prompt, max_tokens=2000)
+    raw = _ask(prompt, max_tokens=2000, tier=TIER_BY_SECTION["lens_insights"])
     if not raw:
         return {l: _FALLBACK for l in lenses}
 
@@ -288,7 +325,7 @@ WRITE:
 
 Constraints: prose, no bullets, 150 words MAX, no fabricated regulations."""
 
-    text = _ask(prompt, max_tokens=400)
+    text = _ask(prompt, max_tokens=400, tier=TIER_BY_SECTION["regulatory_framing"])
     text, _h = _gate_urls(text, source_pool)
     return text.strip() or _FALLBACK
 
@@ -331,7 +368,7 @@ WRITE:
 
 Constraints: prose, no bullets, no fabrication."""
 
-    text = _ask(prompt, max_tokens=500)
+    text = _ask(prompt, max_tokens=500, tier=TIER_BY_SECTION["strategic_implications"])
     text, _h = _gate_urls(text, source_pool)
     return text.strip() or _FALLBACK
 
@@ -390,7 +427,7 @@ Each recommendation must:
 
 Return ONLY the JSON array."""
 
-    raw = _ask(prompt, max_tokens=2400)
+    raw = _ask(prompt, max_tokens=2400, tier=TIER_BY_SECTION["recommendations"])
     if not raw:
         return []
 

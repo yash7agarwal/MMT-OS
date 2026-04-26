@@ -210,3 +210,47 @@ def test_xlsx_observations_have_hyperlinks(mini_snapshot):
                 break
     # mini_snapshot has 1 observation with source_url
     assert rows_with_links >= 1, "expected at least one hyperlinked observation row"
+
+
+# ---- v0.18.0: tier verification ----
+
+def test_tier_split_covers_all_sections():
+    """Every section we synthesize MUST have a tier assignment; otherwise it
+    silently falls into the strict default which is what we're trying to
+    relax. This test catches regressions where a new section is added but
+    forgotten in TIER_BY_SECTION."""
+    from agent.report_synthesis import (
+        TIER_BY_SECTION, TIER_COMMON_KNOWLEDGE, TIER_NEEDS_GROUNDING,
+    )
+    expected = {"executive_summary", "competitive_framing", "lens_insights",
+                "regulatory_framing", "strategic_implications", "recommendations"}
+    assert expected.issubset(set(TIER_BY_SECTION.keys())), (
+        f"sections missing a tier: {expected - set(TIER_BY_SECTION.keys())}"
+    )
+    # Every value must be one of the two tiers
+    valid = {TIER_COMMON_KNOWLEDGE, TIER_NEEDS_GROUNDING}
+    for sec, tier in TIER_BY_SECTION.items():
+        assert tier in valid, f"section {sec!r} has invalid tier {tier!r}"
+
+
+def test_common_knowledge_system_prompt_relaxes_url_requirement():
+    """Pin that the common-knowledge system prompt does NOT carry the
+    'every claim must cite a URL' string. If a future edit re-adds that
+    line under common_knowledge, it defeats the whole tier system."""
+    from agent.report_synthesis import _SYSTEM_COMMON, _SYSTEM_GROUNDED
+    assert "every factual claim must cite a source URL" in _SYSTEM_GROUNDED
+    assert "every factual claim must cite a source URL" not in _SYSTEM_COMMON
+    # Common-knowledge prompt must still forbid fabricating specific numbers
+    assert "fabricate" in _SYSTEM_COMMON.lower()
+    assert "directionally" in _SYSTEM_COMMON.lower() or "specific datum" in _SYSTEM_COMMON.lower()
+
+
+def test_grounded_sections_remain_strict():
+    """Lens insights and regulatory framing — the most domain-specific
+    and time-sensitive sections — must stay on the strict tier."""
+    from agent.report_synthesis import (
+        TIER_BY_SECTION, TIER_NEEDS_GROUNDING,
+    )
+    assert TIER_BY_SECTION["lens_insights"] == TIER_NEEDS_GROUNDING
+    assert TIER_BY_SECTION["regulatory_framing"] == TIER_NEEDS_GROUNDING
+    assert TIER_BY_SECTION["recommendations"] == TIER_NEEDS_GROUNDING

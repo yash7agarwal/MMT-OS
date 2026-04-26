@@ -309,6 +309,18 @@ a:hover { text-decoration: underline; }
   white-space: pre-wrap;
 }
 
+/* --- Tier note (v0.18.0): subtle footnote when a section blends
+       common-knowledge synthesis with cited evidence. --- */
+.tier-note {
+  font-family: 'Liberation Sans', sans-serif;
+  font-size: 8.5pt;
+  color: #71717a;
+  font-style: italic;
+  margin-top: 4mm;
+  padding: 2mm 4mm;
+  border-left: 0.3pt solid #d4d4d8;
+}
+
 /* --- Methodology --- */
 .method-meta {
   display: grid;

@@ -2,6 +2,28 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.18.0] — 2026-04-27 — Tier verification by claim type (stop forcing URLs on every fact)
+
+User correction: *"if I ask Claude or GPT 'who are the competitors of company XYZ' they answer from training data — why does Prism need a Tavily call for that?"* Right. v0.17.x's URL gate over-applied the "zero hallucination" rule by demanding every claim cite a search-pulled URL. The result: even well-known facts (Yatra is an OTA, MakeMyTrip's main competitors are Cleartrip + ixigo + EaseMyTrip) burned a search call → which contributed to the multi-provider quota exhaustion on 2026-04-26/27.
+
+The fix splits sections into two verification tiers:
+
+- **`common_knowledge`** — executive summary, competitive framing, strategic implications. The system prompt allows training-data answers for well-known facts; explicitly forbids fabricating specific numbers / percentages / dates / quotes (those still need source data); marks output with a footnote so the reader knows.
+- **`needs_grounding`** — lens insights, regulatory framing, recommendations. Strict URL-citation gate unchanged. These are domain-specific, time-sensitive, or credibility-critical and must stay anchored in the KG.
+
+### Added
+- `agent/report_synthesis.TIER_BY_SECTION` — explicit map of every section to its tier. New sections must be added here or they fall through to the strict default (with a test pinning the coverage).
+- `_SYSTEM_COMMON` and `_SYSTEM_GROUNDED` system prompts. Common forbids fabricated specifics but allows training-data framing; Grounded keeps the v0.17 strict gate.
+- `_ask(prompt, tier=...)` parameter — every section function now passes its tier explicitly. No silent default — must be specified at call site.
+- 3 new tests in `tests/test_report_generator.py` pinning: every section has a tier; common-knowledge prompt does NOT carry the strict URL rule; grounded sections stay strict.
+
+### Changed
+- `agent/report_templates/report.html.j2` — executive summary section gets a small italic footnote acknowledging the blend of KG citations + analyst training knowledge.
+- `agent/report_templates/report.css` — `.tier-note` styling.
+
+### Why this isn't a quality regression
+The hallucination guard is unchanged — `_gate_urls` still flags URLs not in scope. The relaxation is *what we expect of the LLM* (cite when relevant, not always), not *what we accept as output*. Specific numbers, dates, regulations, and competitor-by-competitor tactics still must come from the KG; only generic framing and well-known industry facts get the relaxed path. Net cost: ~5× fewer LLM/search calls per report on common-domain projects.
+
 ## [0.17.3] — 2026-04-27 — Stop misclassifying every Anthropic 400 as a credit problem
 
 Reports were stuck at "Synthesizing executive summary…" for 5+ minutes per call. Diagnosis: `claude_client.ask()` and `ask_with_tools()` had a too-loose check — every 400 from Anthropic fell through to the Gemini fallback chain on the assumption it was a credit/billing issue. In reality, the 400s were "prompt too long" / "invalid model" / "messages malformed" (root cause TBD; the previous code never logged the body so we couldn't see). The Gemini cascade then 429'd through 30+60+120s retries → Groq 429'd → ~5 min wasted per call before raising.
