@@ -2,6 +2,18 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.18.1] — 2026-04-27 — Report synthesis on Groq instead of Anthropic
+
+After v0.18.0 cut report-call volume by ~5×, the Anthropic credit balance still ran dry within a day of heavy testing because *bursty* traffic (a report = ~10 LLM calls in <2 min) hits Anthropic faster than steady-state daemon usage. Switched the report synthesizer's primary provider to Groq (Llama 3.3 70B). Free tier 30 RPM / 14,400 RPD is plenty for routine report generation. Claude is now the fallback for the rare case Groq is hard-down.
+
+### Changed
+- `agent/report_synthesis._ask` — primary provider now `groq_client.synthesize`. Calls fall back to `claude_client.ask` only when Groq is unavailable or errors. Anti-hallucination guard (`_gate_urls`) is provider-agnostic and applies to Groq output identically.
+
+### Tradeoff
+- **Gained:** routine report generation costs $0; no Anthropic credit burn on the bursty workload that was the root cause of the 2026-04-27 exhaustion. Groq's 30 RPM matches our throttle from v0.15.5 → no cascade collapse on bursts.
+- **Lost:** Llama 3.3 70B is a step below Claude Sonnet 4.6 on dense analytical writing. For the structured prompts in this pipeline (executive summary, lens insights, recommendations) the gap is small; for free-form long-form synthesis it would be more visible.
+- **Net:** correct trade for the cost profile. Quality difference is offset by the website grounding (v0.16.2) and tier verification (v0.18.0) doing more of the heavy lifting upstream — the LLM is mostly composing well-structured paragraphs, not making complex reasoning leaps.
+
 ## [0.18.0] — 2026-04-27 — Tier verification by claim type (stop forcing URLs on every fact)
 
 User correction: *"if I ask Claude or GPT 'who are the competitors of company XYZ' they answer from training data — why does Prism need a Tavily call for that?"* Right. v0.17.x's URL gate over-applied the "zero hallucination" rule by demanding every claim cite a search-pulled URL. The result: even well-known facts (Yatra is an OTA, MakeMyTrip's main competitors are Cleartrip + ixigo + EaseMyTrip) burned a search call → which contributed to the multi-provider quota exhaustion on 2026-04-26/27.

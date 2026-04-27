@@ -110,13 +110,36 @@ _SYSTEM_COMMON = (
 
 
 def _ask(prompt: str, max_tokens: int = 800, system: str = "", tier: str = TIER_NEEDS_GROUNDING) -> str:
-    """Wrap claude_client.ask with the tier-appropriate anti-hallucination system prompt."""
+    """Synthesize via Groq (free, fast) with Claude as fallback.
+
+    v0.18.1: report synthesis switched from Claude-primary to Groq-primary.
+    Why: report generation is bursty — six LLM calls per report — and burns
+    Anthropic credits fast, while Groq's 30 RPM / 14,400 RPD free tier
+    handles a typical report (≈10 calls) with room to spare. Claude stays
+    as the fallback for the rare case Groq is hard-down or rejecting,
+    not for routine traffic. Quality tradeoff: Llama 3.3 70B is a step
+    below Sonnet 4.6 on dense analytical writing but well-suited for the
+    well-structured prompts we use here. The hallucination guard
+    (`_gate_urls`) is provider-agnostic and still applies to Groq output.
+    """
     base = _SYSTEM_COMMON if tier == TIER_COMMON_KNOWLEDGE else _SYSTEM_GROUNDED
     full_system = f"{base}\n\n{system}" if system else base
+
+    # Primary: Groq (free, fast, plenty of headroom for a report's ~10 calls)
+    try:
+        from utils import groq_client
+        if groq_client.is_available():
+            return groq_client.synthesize(
+                prompt=prompt, max_tokens=max_tokens, system=full_system,
+            )
+    except Exception as exc:
+        logger.warning(f"[report_synthesis] Groq failed, falling back to Claude: {exc}")
+
+    # Fallback: Claude — only fires when Groq is unavailable or errored.
     try:
         return ask(prompt, max_tokens=max_tokens, system=full_system, model=DEFAULT_MODEL)
     except Exception as exc:
-        logger.error(f"[report_synthesis] LLM call failed: {exc}")
+        logger.error(f"[report_synthesis] both Groq and Claude failed: {exc}")
         return ""
 
 
