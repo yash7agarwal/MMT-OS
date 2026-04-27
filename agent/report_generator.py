@@ -355,8 +355,13 @@ def _find_cached_manifest(
 def _persist_manifest(
     db: Session, project_id: int, project_name: str, manifest: dict
 ) -> int:
-    """Save manifest as a KnowledgeArtifact row and return its id."""
-    ks = KnowledgeStore(db, project_id)
+    """Save manifest as a KnowledgeArtifact row and return its id.
+
+    KnowledgeStore signature is (db, agent_type, project_id) — the report
+    generator's "agent_type" is the report-system itself. Caught when
+    persistence failed at the end of the first successful Groq-driven run.
+    """
+    ks = KnowledgeStore(db, "report_generator", project_id)
     title = f"Executive Report — {project_name} — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
     return ks.save_artifact(
         artifact_type=ARTIFACT_TYPE,

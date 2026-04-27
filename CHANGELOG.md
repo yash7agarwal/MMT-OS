@@ -2,6 +2,16 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.18.2] — 2026-04-27 — Fix KnowledgeStore positional-arg mismatch in report persistence
+
+v0.18.1's first end-to-end run on Groq actually completed all six synthesis calls in ~12s — finally proving the architecture works under the new provider mix — but failed at the very last step (`Rendering Excel…`) with `KnowledgeStore.__init__() missing 1 required positional argument: 'project_id'`. The orchestrator was passing `(db, project_id)` while `KnowledgeStore` takes `(db, agent_type, project_id)`. Fixed.
+
+### Fixed
+- `agent/report_generator._persist_manifest` — pass `agent_type='report_generator'` as the second positional arg (was incorrectly passing `project_id` as the second arg, satisfying neither parameter correctly).
+
+### Why this didn't fail in unit tests
+`test_report_generator.py` mocks the synthesis path and tests primitives in isolation — the orchestrator + persistence path runs only on the live Railway instance. The bug surfaced exactly the moment everything else worked — the first complete pipeline run.
+
 ## [0.18.1] — 2026-04-27 — Report synthesis on Groq instead of Anthropic
 
 After v0.18.0 cut report-call volume by ~5×, the Anthropic credit balance still ran dry within a day of heavy testing because *bursty* traffic (a report = ~10 LLM calls in <2 min) hits Anthropic faster than steady-state daemon usage. Switched the report synthesizer's primary provider to Groq (Llama 3.3 70B). Free tier 30 RPM / 14,400 RPD is plenty for routine report generation. Claude is now the fallback for the rare case Groq is hard-down.
