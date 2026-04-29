@@ -13,6 +13,7 @@ import {
   Funnel,
   GitBranch,
   TrendUp,
+  Pulse,
 } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
 import type { ProjectDetail } from '@/lib/types'
@@ -23,6 +24,7 @@ const tabs = [
   { label: 'Lenses', href: '/lenses', icon: Funnel },
   { label: 'Trends', href: '/trends', icon: TrendUp },
   { label: 'Impacts', href: '/impacts', icon: GitBranch },
+  { label: 'Industry Pulse', href: '/industry-pulse', icon: Pulse },
   { label: 'Ask', href: '/ask', icon: ChatCircle },
   { label: 'Intelligence', href: '/intelligence', icon: Brain },
   { label: 'Reports', href: '/reports', icon: FileText },

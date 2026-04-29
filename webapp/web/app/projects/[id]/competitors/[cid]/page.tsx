@@ -198,6 +198,51 @@ export default function CompetitorDetailPage({ params }: { params: { id: string;
   const [showReport, setShowReport] = useState<number | null>(null)
   const [deepening, setDeepening] = useState(false)
   const [flash, setFlash] = useState<string | null>(null)
+  // v0.21.0/v0.21.1
+  const [bizHistory, setBizHistory] = useState<{
+    reports: { id: number; title: string; generated_at: string | null; generated_by_agent: string | null; char_count: number }[]
+    profiles: { id: number; title: string; generated_at: string | null; content_md: string }[]
+  } | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [autoFetching, setAutoFetching] = useState(false)
+
+  const refreshBizHistory = async () => {
+    try {
+      const r = await api.businessHistory(entityId)
+      setBizHistory(r)
+    } catch { /* tolerate fetch failure — section just stays empty */ }
+  }
+
+  const handleUpload = async (file: File) => {
+    if (!file) return
+    setUploading(true)
+    setFlash(null)
+    try {
+      const r = await api.uploadAnnualReport(entityId, file)
+      setFlash(`Synthesized: ${r.profile_summary.contrarian_count} contrarian + ${r.profile_summary.nuance_count} nuance + ${r.profile_summary.risk_count} risk insights.`)
+      await refreshBizHistory()
+    } catch (e: any) {
+      setFlash(`Upload failed: ${e.message || e}`)
+    } finally {
+      setUploading(false)
+      setTimeout(() => setFlash(null), 10000)
+    }
+  }
+
+  const handleAutoFetch = async () => {
+    setAutoFetching(true)
+    setFlash(null)
+    try {
+      const r = await api.autoFetchReport(entityId)
+      setFlash(`Fetched ${r.form_type} filed ${r.filed} from EDGAR.`)
+      await refreshBizHistory()
+    } catch (e: any) {
+      setFlash(`Auto-fetch failed: ${(e.message || e).toString().slice(0, 200)}`)
+    } finally {
+      setAutoFetching(false)
+      setTimeout(() => setFlash(null), 10000)
+    }
+  }
 
   const handleDeepen = async () => {
     if (!entity) return
@@ -231,6 +276,8 @@ export default function CompetitorDetailPage({ params }: { params: { id: string;
         (e as KnowledgeEntityDetail).name && a.title.toLowerCase().includes((e as KnowledgeEntityDetail).name.toLowerCase().split(' ')[0])
       )
       setArtifacts(relevant)
+      // v0.21.0: pull business-history artifacts in parallel.
+      refreshBizHistory()
     }).catch((err: any) => setError(err.message))
       .finally(() => setLoading(false))
   }, [entityId, projectId])
@@ -324,6 +371,12 @@ export default function CompetitorDetailPage({ params }: { params: { id: string;
         <span>{entity.relations.length} relations</span>
         <span className="text-zinc-700">|</span>
         <span>{screenshots.length} screenshots</span>
+        {bizHistory && (
+          <>
+            <span className="text-zinc-700">|</span>
+            <span>{bizHistory.reports.length} annual reports</span>
+          </>
+        )}
         {entity.observations.length > 0 && (
           <>
             <span className="text-zinc-700">|</span>
@@ -331,6 +384,81 @@ export default function CompetitorDetailPage({ params }: { params: { id: string;
           </>
         )}
       </div>
+
+      {/* v0.21.0: Business History — annual reports + LLM-synthesized profile.
+           Uploaded PDFs are extracted in-memory; binary is not persisted on
+           Railway (no durable FS). Only extracted text + synthesized markdown
+           live in the DB. SEC EDGAR auto-fetch is best-effort for US-listed. */}
+      <section className="mb-8">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <h3 className="text-xs font-medium text-emerald-400 uppercase tracking-wider">
+            Business history
+          </h3>
+          <div className="flex items-center gap-2">
+            <label className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium border cursor-pointer transition-colors ${uploading ? 'opacity-50 cursor-not-allowed' : 'bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border-emerald-500/20'}`}>
+              <input
+                type="file"
+                accept="application/pdf"
+                disabled={uploading}
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) handleUpload(f)
+                  e.currentTarget.value = ''
+                }}
+                className="hidden"
+              />
+              {uploading ? 'Uploading…' : 'Upload annual report (PDF)'}
+            </label>
+            <button
+              onClick={handleAutoFetch}
+              disabled={autoFetching}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700 disabled:opacity-50 transition-colors"
+              title="Try SEC EDGAR auto-fetch (10-K / 20-F). Works for US-listed companies. Falls back to manual upload otherwise."
+            >
+              {autoFetching ? 'Fetching…' : 'Auto-fetch from EDGAR'}
+            </button>
+          </div>
+        </div>
+        <p className="text-xs text-zinc-500 mb-4 max-w-2xl leading-relaxed">
+          Upload an annual report or 10-K. We extract the text in-memory (binary is
+          not stored), then synthesize a structured profile: market thesis, business
+          model, margin pattern, contrarian insights, and red flags.
+        </p>
+
+        {bizHistory && bizHistory.reports.length > 0 && (
+          <div className="mb-4 flex flex-wrap gap-2">
+            {bizHistory.reports.map(r => (
+              <span
+                key={r.id}
+                className="text-xs text-zinc-400 bg-zinc-900 border border-zinc-800 rounded px-2 py-1"
+                title={`${(r.char_count / 1000).toFixed(0)}K chars · via ${r.generated_by_agent || '?'}`}
+              >
+                {r.title}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {bizHistory && bizHistory.profiles.length > 0 ? (
+          <div className="space-y-4">
+            {bizHistory.profiles.map(p => (
+              <div key={p.id} className="border border-emerald-500/20 bg-emerald-500/5 rounded-xl p-5">
+                <div className="text-xs text-zinc-500 mb-3">
+                  Synthesized {p.generated_at ? new Date(p.generated_at).toLocaleString() : '—'}
+                </div>
+                <RenderContent text={p.content_md} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="border border-dashed border-zinc-800 rounded-xl p-6 text-center">
+            <p className="text-sm text-zinc-500">No business profile yet.</p>
+            <p className="text-xs text-zinc-600 mt-1">
+              Upload an annual report or click Auto-fetch to generate one.
+            </p>
+          </div>
+        )}
+      </section>
 
       {/* Full Report (if exists) */}
       {artifacts.length > 0 && (

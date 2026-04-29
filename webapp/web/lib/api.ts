@@ -239,6 +239,52 @@ export const api = {
       `/api/knowledge/competitors/${entityId}/deepen?n_questions=${nQuestions}`,
       { method: 'POST' }
     ),
+  // v0.21.0 / v0.21.1 — annual reports + business history + industry pulse
+  uploadAnnualReport: async (entityId: number, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(`/api/knowledge/competitors/${entityId}/upload-report`, {
+      method: 'POST',
+      body: fd,
+    })
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      throw new Error(`Upload failed: ${res.status} ${text.slice(0, 300)}`)
+    }
+    return res.json() as Promise<{
+      annual_report_artifact_id: number
+      business_history_artifact_id: number
+      extraction_meta: Record<string, any>
+      profile_summary: { thesis: string; model: string; contrarian_count: number; nuance_count: number; risk_count: number }
+    }>
+  },
+  autoFetchReport: (entityId: number) =>
+    request<{
+      source: string
+      cik: string
+      form_type: string
+      filed: string
+      doc_url: string
+      annual_report_artifact_id: number
+      business_history_artifact_id: number
+    }>(
+      `/api/knowledge/competitors/${entityId}/auto-fetch-report`,
+      { method: 'POST', timeoutMs: 120_000 }
+    ),
+  businessHistory: (entityId: number) =>
+    request<{
+      reports: { id: number; title: string; generated_at: string | null; generated_by_agent: string | null; char_count: number }[]
+      profiles: { id: number; title: string; generated_at: string | null; content_md: string }[]
+    }>(`/api/knowledge/competitors/${entityId}/business-history`),
+  industryPulse: (projectId: number) =>
+    request<{
+      competitor_count: number
+      synthesis: string
+      cached?: boolean
+      generated_at?: string
+      message?: string
+      artifact_id?: number
+    }>(`/api/knowledge/industry-pulse?project_id=${projectId}`, { timeoutMs: 120_000 }),
   listSessions: (projectId: number, agentType?: string) =>
     request<AgentSession[]>(
       `/api/knowledge/sessions?project_id=${projectId}${agentType ? `&agent_type=${agentType}` : ''}`

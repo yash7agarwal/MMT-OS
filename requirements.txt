@@ -15,3 +15,6 @@ jinja2>=3.1.0
 weasyprint>=62.0
 openpyxl>=3.1.0
 matplotlib>=3.8.0
+# v0.21.0: PDF text extraction for uploaded annual reports + auto-fetched
+# 10-Ks. Pure Python, ~1MB, no native deps.
+pypdf>=4.0.0

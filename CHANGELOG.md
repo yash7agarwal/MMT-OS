@@ -2,6 +2,43 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.21.0] — 2026-04-29 — Business history + annual reports + SEC EDGAR + Industry Pulse
+
+User asked: *"build a business history section that tells about why this company makes or doesn't make sense in the market it is in, how is it performing, downloads the annual report of each listed competitor … structure that gives the option of manually selecting all the annual reports that can be consumed and then populate the respective competitor and make sense of the business landscape … identify various business models that are being followed, margins, nuances and business tricks, 'something about the business that you know but most people don't' kind of contrary details."*
+
+### Added
+
+**Business history per competitor** (`agent/business_history.py`):
+- PDF text extraction in-memory (pypdf, no disk write — Railway has no durable FS).
+- LLM-synthesized `BusinessProfile` with 7 fields: market thesis, business model + revenue lever, margin profile, performance, **contrarian insights** (3-5 "most people don't know" items), business nuances (the subtle stuff), risks & red flags. Hard-grounded in the source text — synthesizer is told to omit rather than fabricate.
+- `to_markdown()` renders as a Reports-compatible markdown blob.
+
+**SEC EDGAR auto-fetch** (`agent/sec_edgar.py`, US-listed only):
+- CIK lookup via SEC's public `company_tickers.json` (free, no API key, just a UA header).
+- Latest 10-K / 20-F / 40-F discovery from the submissions index.
+- Document fetch + minimal HTML strip.
+- Returns None on miss; UI falls through to manual upload.
+
+**4 new endpoints in `webapp/api/routes/knowledge.py`**:
+- `POST /api/knowledge/competitors/{id}/upload-report` — multipart PDF upload, extracts inline, synthesizes profile, persists both as `KnowledgeArtifact` rows.
+- `POST /api/knowledge/competitors/{id}/auto-fetch-report` — same flow but seeded from EDGAR.
+- `GET /api/knowledge/competitors/{id}/business-history` — list reports + profiles for that entity.
+- `GET /api/knowledge/industry-pulse` — cross-cut synthesis across all `business_history` artifacts in the project. Identifies dominant business models, margin patterns, **cross-cutting contrarian themes spanning competitors**, where the value chain captures margin, and risk concentrations. Cached as `KnowledgeArtifact(artifact_type='industry_pulse')`; recomputes only when newer profiles exist.
+
+**Frontend**:
+- "Business history" section on competitor detail page with Upload + Auto-fetch buttons. Renders the synthesized profile as structured markdown (thesis, model, contrarian insights, nuances, red flags).
+- New **Industry Pulse** tab in the project layout. Renders the cross-cut synthesis with a Refresh action.
+
+**Tests** (17 new):
+- `tests/test_business_history.py` — PDF extraction edge cases, JSON parse robustness, synthesis happy path + malformed-LLM-output handling, `to_markdown` section presence.
+- `tests/test_sec_edgar.py` — CIK lookup match/miss/cache, missing 10-K case, normalization.
+
+### Why this matters
+A competitor card before today told you their name and a one-line differentiator. Now you can drop in a 10-K (or have us fetch it from EDGAR for US-listed) and get back a sharp, citation-grounded read on their business model, margins, performance, and the contrarian things most people miss. Across the competitive set, Industry Pulse tells you the structural patterns nobody competitor's brief surfaces alone — e.g. "8 of 12 are take-rate; 3 of those report ARR-like metrics that include one-time fees."
+
+### Storage note
+PDF binaries are NOT persisted (Railway has no durable filesystem on the free tier). Only the extracted text + synthesized markdown live in the DB. Re-upload if you want the binary back.
+
 ## [0.20.2] — 2026-04-29 — Profile-depth relabel + uncap + LLM-driven deep-profile model
 
 User report: *"every competitor profile identifies now is at 30% completion, not sure how to get them to 100%"* + *"build an intelligence model that can generate deep and provoking prompts to uncover latest, reliable and insightful information from the LLM discovery feature"*.

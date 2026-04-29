@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import String, cast, func, or_, text
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from webapp.api.db import get_db
 from webapp.api.models import (
@@ -999,6 +1002,349 @@ def reap_orphans(
         w.completed_at = datetime.utcnow()
     db.commit()
     return {"reaped": len(orphans)}
+
+
+@router.post("/competitors/{entity_id}/upload-report")
+async def upload_annual_report(
+    entity_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """v0.21.0: upload an annual report (PDF) for a competitor.
+
+    Flow: read bytes → extract text via pypdf in-memory → persist text as
+    `KnowledgeArtifact(artifact_type='annual_report')` → trigger
+    business-history synthesis inline → return both artifact ids.
+
+    Storage: we DO NOT persist the binary. Railway free tier has no
+    durable filesystem; only extracted text + synthesized markdown are
+    durable. Caller can re-upload if they want the source-of-truth file
+    on disk.
+    """
+    from agent.business_history import (
+        BusinessProfile,
+        extract_text_from_pdf_bytes,
+        synthesize_business_profile,
+    )
+    from webapp.api.models import Project
+
+    entity = db.get(KnowledgeEntity, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    if entity.entity_type != "company":
+        raise HTTPException(status_code=400, detail=f"Entity is {entity.entity_type}, not company")
+
+    blob = await file.read()
+    if not blob:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(blob) > 50 * 1024 * 1024:  # 50 MB cap
+        raise HTTPException(status_code=413, detail="File exceeds 50MB; please trim non-narrative pages.")
+
+    extracted, meta = extract_text_from_pdf_bytes(blob)
+    if not extracted:
+        raise HTTPException(
+            status_code=422,
+            detail=meta.get("extraction_error") or "PDF extraction yielded no text.",
+        )
+
+    project = db.get(Project, entity.project_id)
+    project_desc = (project.description if project else "") or ""
+
+    # Persist raw extracted text as one artifact (annual_report).
+    report_art = KnowledgeArtifact(
+        project_id=entity.project_id,
+        artifact_type="annual_report",
+        title=f"{entity.name} — {file.filename}",
+        content_md=extracted[:200_000],
+        entity_ids_json=[entity_id],
+        generated_by_agent="manual_upload",
+    )
+    db.add(report_art)
+    db.commit()
+    db.refresh(report_art)
+
+    # Synthesize business profile inline. Single Groq call ~5-10s; saves the
+    # need for a separate worker queue for the v1 surface.
+    profile = synthesize_business_profile(
+        competitor=entity.name,
+        project_name=project.name if project else "this product",
+        project_description=project_desc,
+        sources=[{
+            "title": f"{entity.name} — {file.filename}",
+            "text": extracted,
+            "year": "",
+        }],
+    )
+    profile_md = profile.to_markdown()
+    profile_art = KnowledgeArtifact(
+        project_id=entity.project_id,
+        artifact_type="business_history",
+        title=f"Business history · {entity.name}",
+        content_md=profile_md,
+        entity_ids_json=[entity_id],
+        generated_by_agent="business_history_synth",
+    )
+    db.add(profile_art)
+    db.commit()
+    db.refresh(profile_art)
+
+    return {
+        "annual_report_artifact_id": report_art.id,
+        "business_history_artifact_id": profile_art.id,
+        "extraction_meta": meta,
+        "profile_summary": {
+            "thesis": profile.market_thesis[:200],
+            "model": profile.business_model[:200],
+            "contrarian_count": len(profile.contrarian_insights),
+            "nuance_count": len(profile.nuances),
+            "risk_count": len(profile.risks_and_red_flags),
+        },
+    }
+
+
+@router.post("/competitors/{entity_id}/auto-fetch-report")
+def auto_fetch_report(
+    entity_id: int,
+    db: Session = Depends(get_db),
+):
+    """v0.21.1: try to auto-fetch the latest 10-K from SEC EDGAR.
+
+    Returns 404 if the company isn't US-listed or no annual filing was found
+    — caller should fall back to manual upload.
+    """
+    from agent.business_history import synthesize_business_profile
+    from agent.sec_edgar import fetch_latest_annual_report
+    from webapp.api.models import Project
+
+    entity = db.get(KnowledgeEntity, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    if entity.entity_type != "company":
+        raise HTTPException(status_code=400, detail=f"Entity is {entity.entity_type}, not company")
+
+    report = fetch_latest_annual_report(entity.name)
+    if not report or not report.raw_text or len(report.raw_text) < 5000:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"No annual filing auto-fetched for {entity.name!r}. "
+                "Likely not US-listed or filing format unsupported. "
+                "Use manual upload instead."
+            ),
+        )
+
+    project = db.get(Project, entity.project_id)
+    project_desc = (project.description if project else "") or ""
+
+    report_art = KnowledgeArtifact(
+        project_id=entity.project_id,
+        artifact_type="annual_report",
+        title=f"{entity.name} — {report.form_type} filed {report.filed}",
+        content_md=report.raw_text[:200_000],
+        entity_ids_json=[entity_id],
+        generated_by_agent="sec_edgar_auto",
+    )
+    db.add(report_art)
+    db.commit()
+    db.refresh(report_art)
+
+    profile = synthesize_business_profile(
+        competitor=entity.name,
+        project_name=project.name if project else "this product",
+        project_description=project_desc,
+        sources=[{
+            "title": f"{report.form_type} {report.filed}",
+            "text": report.raw_text,
+            "year": report.filed[:4],
+        }],
+    )
+    profile_art = KnowledgeArtifact(
+        project_id=entity.project_id,
+        artifact_type="business_history",
+        title=f"Business history · {entity.name}",
+        content_md=profile.to_markdown(),
+        entity_ids_json=[entity_id],
+        generated_by_agent="business_history_synth",
+    )
+    db.add(profile_art)
+    db.commit()
+    db.refresh(profile_art)
+
+    return {
+        "source": "sec_edgar",
+        "cik": report.cik,
+        "form_type": report.form_type,
+        "filed": report.filed,
+        "doc_url": report.primary_doc_url,
+        "annual_report_artifact_id": report_art.id,
+        "business_history_artifact_id": profile_art.id,
+    }
+
+
+@router.get("/competitors/{entity_id}/business-history")
+def list_business_history(
+    entity_id: int,
+    db: Session = Depends(get_db),
+):
+    """List uploaded annual reports + synthesized business-history artifacts
+    for a single competitor."""
+    entity = db.get(KnowledgeEntity, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    arts = (
+        db.query(KnowledgeArtifact)
+        .filter(
+            KnowledgeArtifact.project_id == entity.project_id,
+            KnowledgeArtifact.artifact_type.in_(("annual_report", "business_history")),
+        )
+        .order_by(KnowledgeArtifact.generated_at.desc())
+        .all()
+    )
+    relevant = [a for a in arts if a.entity_ids_json and entity_id in a.entity_ids_json]
+    reports = [a for a in relevant if a.artifact_type == "annual_report"]
+    profiles = [a for a in relevant if a.artifact_type == "business_history"]
+    return {
+        "reports": [
+            {
+                "id": a.id,
+                "title": a.title,
+                "generated_at": a.generated_at.isoformat() if a.generated_at else None,
+                "generated_by_agent": a.generated_by_agent,
+                "char_count": len(a.content_md or ""),
+            }
+            for a in reports
+        ],
+        "profiles": [
+            {
+                "id": a.id,
+                "title": a.title,
+                "generated_at": a.generated_at.isoformat() if a.generated_at else None,
+                "content_md": a.content_md,
+            }
+            for a in profiles
+        ],
+    }
+
+
+@router.get("/industry-pulse")
+def industry_pulse(
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """v0.21.1: synthesize an industry pulse from all business-history
+    artifacts in the project. Identifies common business models, margin
+    patterns, contrarian themes across the competitive set.
+
+    Cached as KnowledgeArtifact(artifact_type='industry_pulse'). Re-runs
+    only when called — caller can invalidate by calling refresh=true.
+    """
+    profiles = (
+        db.query(KnowledgeArtifact)
+        .filter(
+            KnowledgeArtifact.project_id == project_id,
+            KnowledgeArtifact.artifact_type == "business_history",
+        )
+        .order_by(KnowledgeArtifact.generated_at.desc())
+        .all()
+    )
+    if not profiles:
+        return {
+            "competitor_count": 0,
+            "synthesis": "",
+            "message": "No business-history profiles yet. Upload at least one annual report on a competitor.",
+        }
+
+    # Cache hit: return the most recent industry_pulse if newer than every profile.
+    pulse_existing = (
+        db.query(KnowledgeArtifact)
+        .filter(
+            KnowledgeArtifact.project_id == project_id,
+            KnowledgeArtifact.artifact_type == "industry_pulse",
+        )
+        .order_by(KnowledgeArtifact.generated_at.desc())
+        .first()
+    )
+    if pulse_existing and profiles and pulse_existing.generated_at > profiles[0].generated_at:
+        return {
+            "competitor_count": len(profiles),
+            "synthesis": pulse_existing.content_md,
+            "cached": True,
+            "generated_at": pulse_existing.generated_at.isoformat(),
+        }
+
+    # Build the cross-cut prompt.
+    from agent.business_history import _call_llm  # type: ignore[attr-defined]
+
+    snippets: list[str] = []
+    for p in profiles[:30]:  # cap aggregate input size
+        snippets.append(f"=== {p.title} ===\n{(p.content_md or '')[:6000]}")
+
+    prompt = f"""You are a senior industry analyst synthesizing the competitive landscape \
+for **project_id={project_id}**.
+
+Below are business-history briefs on {len(profiles)} competitors. Identify the structural \
+patterns across them — the things a sharp investor or operator would notice that no \
+single competitor's brief surfaces alone.
+
+Produce a markdown report with these sections:
+
+# Industry Pulse — {len(profiles)} competitors profiled
+
+## Dominant business models
+<which models recur. e.g. "7 of 12 are take-rate marketplaces; 3 are SaaS-on-top; 2 are mixed">
+
+## Margin patterns
+<gross / operating margin distribution + qualitative read>
+
+## Cross-cutting contrarian themes
+<3-5 non-obvious patterns SPANNING competitors. e.g. "Most companies disclose ARR but 4 of them carry significant one-time fees in that line">
+
+## Where the real money is made
+<which lever in the value chain captures the margin: distribution, supply, brand, software, network effects>
+
+## Risk concentrations across the set
+<common red flags — customer concentration, regulatory exposure, related-party deals>
+
+Hard rules:
+- EVERY claim must be grounded in the briefs below. If you can't point at specific competitors, omit it.
+- Reference competitors by name when making a claim ("e.g. Acme, Globex").
+- Sharp, specific, opinionated. No "growing fast" or "differentiated platform" filler.
+
+BRIEFS:
+---
+{chr(10).join(snippets)}
+---
+
+Return ONLY the markdown report."""
+
+    md = _call_llm(prompt, max_tokens=4096) or ""
+    if not md.strip():
+        return {
+            "competitor_count": len(profiles),
+            "synthesis": "",
+            "message": "LLM call failed. Try again later.",
+        }
+
+    pulse_art = KnowledgeArtifact(
+        project_id=project_id,
+        artifact_type="industry_pulse",
+        title=f"Industry pulse · {len(profiles)} competitors",
+        content_md=md,
+        entity_ids_json=None,
+        generated_by_agent="industry_pulse_synth",
+    )
+    db.add(pulse_art)
+    db.commit()
+    db.refresh(pulse_art)
+
+    return {
+        "competitor_count": len(profiles),
+        "synthesis": md,
+        "generated_at": pulse_art.generated_at.isoformat() if pulse_art.generated_at else None,
+        "artifact_id": pulse_art.id,
+        "cached": False,
+    }
 
 
 @router.post("/competitors/{entity_id}/deepen")
