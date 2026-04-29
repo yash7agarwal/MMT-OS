@@ -478,6 +478,16 @@ Return ONLY a JSON array. Each item:
 
         context = item.context_json or {}
 
+        # v0.19.0: LLM-as-search for the discovery work-item categories.
+        # User feedback: "if I ask Claude or GPT 'who are the competitors of
+        # company XYZ' they answer from training data — why does Prism need
+        # a Tavily call?" — right. For named-entity discovery, training data
+        # is more accurate than search drift, search-cost-free, and survives
+        # search-provider quota exhaustion. Search remains the path for
+        # dated/quantified/regulatory work items below.
+        if item.category in ("industry_identification", "contrarian_discovery"):
+            return self._llm_discover_competitors(item)
+
         # Use efficient researcher for competitor profiles (1-2 LLM calls instead of 10-15)
         if item.category in ("competitor_profile", "financial_deep_dive"):
             competitor_name = context.get("competitor_name") or item.description.split("for ")[-1].split(",")[0].strip()
@@ -621,6 +631,115 @@ Return ONLY a JSON array. Each item:
     # ------------------------------------------------------------------
     # Tool implementations (private)
     # ------------------------------------------------------------------
+
+    def _llm_discover_competitors(self, item) -> dict:
+        """v0.19.0: LLM-as-search path for industry_identification + contrarian_discovery.
+
+        Asks Groq (free, fast) for the competitor list directly from training
+        knowledge — no search-provider call. Each emitted URL gets a HEAD
+        check; verified URLs become first-class observations, unverified
+        ones are saved with a label so the report knows the citation is
+        training-data-only.
+
+        Bypasses the search-quota cliff that produced "0 findings overnight"
+        when Tavily/Exa hit their limits. Falls through to None-return on
+        complete failure; caller (this method's caller is execute_work_item)
+        treats that as a failed work item.
+        """
+        from agent.llm_search import llm_competitor_discovery
+        from agent.extraction_guard import validate_extraction
+
+        # Pull portfolio summary (v0.16.2) when available — strongest grounding.
+        portfolio = None
+        try:
+            from agent.research_brief import build_brief
+            brief = build_brief(self.db, self.project_id)
+            portfolio = brief.portfolio_summary
+        except Exception as exc:
+            logger.info(f"[competitive_intel:llm_discover] portfolio fetch skipped: {exc}")
+
+        discovery = llm_competitor_discovery(
+            project_name=self.project_name,
+            project_description=self.project_description,
+            portfolio_summary=portfolio,
+        )
+
+        # Filter to the categories matching this work item — `contrarian_discovery`
+        # is specifically about indirect; `industry_identification` covers
+        # both direct buckets.
+        if item.category == "contrarian_discovery":
+            refs = discovery.indirect
+        else:
+            refs = discovery.direct_local + discovery.direct_global
+
+        saved = 0
+        rejected = 0
+        for ref in refs:
+            guard = validate_extraction(ref.name, "company", self.project_name)
+            if not guard.ok:
+                logger.info(f"[competitive_intel:llm_discover] dropped: {guard.reason}")
+                rejected += 1
+                continue
+
+            metadata = {"discovered_via": "llm_training_knowledge", "category": ref.category}
+            if ref.url:
+                metadata["url"] = ref.url
+                metadata["url_status"] = ref.url_status
+            company_id = self.knowledge.upsert_entity(
+                entity_type="company",
+                name=ref.name,
+                description=ref.differentiator or f"{ref.category} competitor of {self.project_name}",
+                metadata=metadata,
+            )
+            # Link via competes_with if a project entity exists; otherwise create one.
+            project_entities = self.knowledge.find_entities(
+                entity_type="project", name_like=self.project_name
+            )
+            if project_entities:
+                project_eid = project_entities[0]["id"]
+            else:
+                project_eid = self.knowledge.upsert_entity(
+                    entity_type="project",
+                    name=self.project_name,
+                    description=self.project_description,
+                )
+            self.knowledge.add_relation(
+                from_id=project_eid, to_id=company_id, relation_type="competes_with",
+            )
+
+            # If URL verified, add an observation pointing at it. If not verified,
+            # add a training-data-cited observation so the report has provenance.
+            obs_content = ref.differentiator or f"{ref.category} competitor"
+            if ref.url and ref.url_status == "verified":
+                self.knowledge.add_observation(
+                    entity_id=company_id,
+                    obs_type="general",
+                    content=obs_content,
+                    source_url=ref.url,
+                    lens_tags=["growth"],
+                )
+            else:
+                self.knowledge.add_observation(
+                    entity_id=company_id,
+                    obs_type="general",
+                    content=f"{obs_content} (training-data citation, URL unverified)",
+                    source_url=ref.url or "",
+                    lens_tags=["growth"],
+                )
+            saved += 1
+
+        self._current_result = {
+            "status": "completed",
+            "summary": (
+                f"LLM-discovered {saved} {item.category} competitors "
+                f"(rejected {rejected} by guard). "
+                f"local={len(discovery.direct_local)} global={len(discovery.direct_global)} "
+                f"indirect={len(discovery.indirect)}"
+            ),
+            "entities_created": saved,
+            "observations_added": saved,
+        }
+        return self._current_result
 
     def _tool_save_competitor(self, inp: dict) -> str:
         """Save a competitor company entity and optionally its app."""

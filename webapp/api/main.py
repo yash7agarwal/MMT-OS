@@ -31,7 +31,7 @@ logging.basicConfig(
 app = FastAPI(
     title="Prism API",
     description="Product intelligence platform — competitive research, trends, impacts. UAT lives in Loupe.",
-    version="0.18.6",
+    version="0.19.0",
 )
 
 # CORS — locals for dev, Vercel + is-a.dev for prod. Extra comma-separated

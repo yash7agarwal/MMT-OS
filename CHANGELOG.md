@@ -2,6 +2,36 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.19.0] — 2026-04-29 — LLM-as-search for competitor discovery
+
+User insight: *"if I ask Claude or GPT 'who are the competitors of company XYZ' they answer from training data — why does Prism need a Tavily call?"*
+
+Right. For named-entity discovery, modern LLMs (Llama 3.3 70B on Groq, Claude, GPT) already encode the answer with better fidelity than search-grounded synthesis — search drift (e.g. "Platinum Industries" → platinum-metal pollution) doesn't happen, and there's no quota wall. Live UAT against Sarvam.ai now produces:
+
+```
+direct_global: OpenAI, Anthropic, Google, Cohere, Mistral AI    ← finally
+direct_local:  Indian AI startups
+indirect:      Hugging Face, AWS SageMaker, Google Cloud AI
+```
+
+The architectural change is bounded — search infrastructure stays intact for `competitor_profile`, `regulatory_scan`, dated/quantified queries where it actually adds value. Discovery just bypasses it.
+
+### Added
+- `agent/llm_search.py` — `llm_competitor_discovery(project_name, project_description, portfolio_summary?) → CompetitorDiscovery`. One Groq call (Claude fallback) returns `direct_local + direct_global + indirect` competitor lists with one-line differentiators and (optionally) homepage URLs. Each emitted URL gets a single HEAD request (5s timeout, 8-way parallel pool) — verified URLs become first-class source citations; unverified URLs are kept with the entity but the observation content notes "training-data citation, URL unverified" so the report's hallucination guard sees the provenance.
+- `agent/competitive_intel_agent._llm_discover_competitors` — new path for `industry_identification` and `contrarian_discovery` work items. Pulls portfolio_summary from the brief (v0.16.2 grounding), runs LLM discovery, validates each name through `extraction_guard.validate_extraction` (which catches placeholders, self-references, trivial names per v0.16.0 + v0.18.3), upserts `company` entities + `competes_with` relations + initial observations.
+- `tests/test_llm_search.py` — 10 unit tests pinning JSON parsing (strict / fenced / prose-wrapped / garbage), URL verifier behavior, and LLM-discovery happy path + degradation paths (empty response, non-list categories, unnamed entries).
+
+### Changed
+- `agent/competitive_intel_agent.execute_work_item` — routes `industry_identification` and `contrarian_discovery` work items through the new LLM-discover path instead of the autonomous tool-use loop. Other categories (`competitor_profile`, `regulatory_scan`, etc.) unchanged — they still benefit from search.
+
+### Tradeoff register
+- **Gained:** competitor discovery now works overnight even with all four search providers exhausted ($0 cost, 100% availability against any free LLM tier). Global category leaders + indirect substitutes appear automatically — the user's two outstanding complaints from yesterday's UAT both addressed by the same architectural cut.
+- **Lost:** discovery is bounded to the LLM's training cutoff (≈Jan 2026 for current Llama 3.3 / Claude). Companies founded in the last few months may be missed. Source URLs are LLM-emitted (verified-or-labeled) rather than pulled from live search results.
+- **Net:** worth it. The "0 findings overnight" failure mode is the worse outcome by an order of magnitude. Time-sensitive queries already route through search-grounded paths (`regulatory_scan`, `competitor_profile`) and stay there.
+
+### Why this lever didn't exist before
+The original architecture was built defensively against LLM hallucination — every claim had to cite a search-pulled URL. That's correct for *invented metrics and percentages* but over-applied to *common-knowledge entity facts*. The tier-verification work in v0.18.0 set up the conceptual split; this release operationalizes it for the discovery step where it matters most.
+
 ## [0.18.6] — 2026-04-29 — Live activity panel on Intelligence tab
 
 User: *"it's showing Starting but no idea if it's stuck or if something is happening."* The fix for v0.18.5's silent-404 bug got the agent firing, but the user had no visibility into what the agent was actually doing once spawned. Just a "Starting…" spinner until the run resolved 4–8 minutes later.
