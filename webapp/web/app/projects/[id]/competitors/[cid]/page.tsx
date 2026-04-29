@@ -14,6 +14,7 @@ import {
   LinkSimple,
   Image,
   Lightbulb,
+  Sparkle,
 } from '@phosphor-icons/react'
 import { api } from '@/lib/api'
 import type { KnowledgeEntityDetail, KnowledgeScreenshot, KnowledgeObservation, KnowledgeArtifact } from '@/lib/types'
@@ -195,6 +196,24 @@ export default function CompetitorDetailPage({ params }: { params: { id: string;
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showReport, setShowReport] = useState<number | null>(null)
+  const [deepening, setDeepening] = useState(false)
+  const [flash, setFlash] = useState<string | null>(null)
+
+  const handleDeepen = async () => {
+    if (!entity) return
+    setDeepening(true)
+    try {
+      const r = await api.deepenCompetitor(entity.id)
+      setFlash(r.created
+        ? `Queued deep profile for ${entity.name}. The intel agent will pick it up — refresh in 1–2 min.`
+        : `Already pending: ${r.reason || 'in queue'}.`)
+    } catch (e: any) {
+      setFlash(`Failed: ${e.message || e}`)
+    } finally {
+      setDeepening(false)
+      setTimeout(() => setFlash(null), 8000)
+    }
+  }
 
   const projectId = parseInt(params.id, 10)
 
@@ -244,23 +263,45 @@ export default function CompetitorDetailPage({ params }: { params: { id: string;
   // Add any types not in the predefined order
   Object.keys(obsByType).forEach(t => { if (!orderedTypes.includes(t)) orderedTypes.push(t) })
 
-  const confidenceColor = entity.confidence >= 0.7 ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20'
-    : entity.confidence >= 0.3 ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
-    : 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20'
-
-  const confidenceLabel = entity.confidence >= 0.7 ? 'Well researched'
-    : entity.confidence >= 0.3 ? 'Partially researched'
-    : 'Needs more research'
+  // v0.20.2: relabel "confidence" → "Profile depth · X findings". The score
+  // really tracks observation count, not confidence; calling it confidence
+  // confused users into thinking 30% meant "low quality" when it means
+  // "1-2 findings — needs more research."
+  const findingCount = entity.observations.length
+  const depthBand = findingCount === 0 ? { pct: 10, label: 'No findings yet', tone: 'text-zinc-400 bg-zinc-500/10 border-zinc-500/20' }
+    : findingCount <= 2 ? { pct: 30, label: 'Shallow profile', tone: 'text-amber-400 bg-amber-500/10 border-amber-500/20' }
+    : findingCount <= 4 ? { pct: 60, label: 'Medium profile', tone: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20' }
+    : findingCount <= 7 ? { pct: 90, label: 'Deep profile', tone: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' }
+    : { pct: 100, label: 'Comprehensive', tone: 'text-emerald-300 bg-emerald-500/15 border-emerald-500/30' }
 
   return (
     <div>
+      {flash && (
+        <div className="mb-4 px-4 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-sm text-emerald-300">
+          {flash}
+        </div>
+      )}
       {/* Header */}
       <div className="mb-6">
         <div className="flex items-center gap-3 mb-2 flex-wrap">
           <h2 className="text-xl font-semibold tracking-tight text-zinc-100">{entity.name}</h2>
-          <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${confidenceColor}`}>
-            {confidenceLabel}
+          <span
+            className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${depthBand.tone}`}
+            title={`Profile depth: ${findingCount} findings → ${depthBand.pct}%. Bands: 0=10%, 1-2=30%, 3-4=60%, 5-7=90%, 8+=100%.`}
+          >
+            {depthBand.pct}% · {findingCount} finding{findingCount === 1 ? '' : 's'} · {depthBand.label}
           </span>
+          {findingCount < 8 && (
+            <button
+              onClick={handleDeepen}
+              disabled={deepening}
+              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 disabled:opacity-50 transition-colors"
+              title="Run LLM probing prompts to extract 8-10 sharp facts (recent moves, pricing, moat, weaknesses, regulatory). Free Groq calls — takes 30-60s once the agent picks it up."
+            >
+              <Sparkle size={12} weight="fill" />
+              {deepening ? 'Queuing…' : 'Deepen profile'}
+            </button>
+          )}
         </div>
         {entity.description && (
           <p className="text-sm text-zinc-400 max-w-2xl leading-relaxed">{entity.description}</p>

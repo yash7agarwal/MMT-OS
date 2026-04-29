@@ -2,6 +2,27 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.20.2] — 2026-04-29 — Profile-depth relabel + uncap + LLM-driven deep-profile model
+
+User report: *"every competitor profile identifies now is at 30% completion, not sure how to get them to 100%"* + *"build an intelligence model that can generate deep and provoking prompts to uncover latest, reliable and insightful information from the LLM discovery feature"*.
+
+The "30% confidence" badge wasn't a confidence score — it was an observation-count band (`webapp/api/routes/knowledge.py:67`) capped at 90%. Every LLM-discovered competitor lands in the 1–2 findings band → 30%, with no path to 100% even on perfect data.
+
+### Added
+- **`agent/llm_deep_profile.py`** — generates 8–10 project-specific *probing prompts* per competitor across 11 fact-categories (recent_moves, pricing, feature, metric, regulatory, leadership, technical_moat, weakness, ma_activity, growth_signal, controversy), then runs each prompt as a separate LLM call to extract structured `Fact` rows. Drops low-confidence facts. Parallel by default (4 workers). Groq primary, Claude fallback. ~11 calls per competitor — free on Groq quota.
+- **`competitor_deep_profile` work-item category** routed in `agent/competitive_intel_agent.py:execute_work_item` → `_llm_deep_profile()`. Each fact becomes a tagged observation (correct `observation_type` + `lens_tags`), pushing the competitor into the 5+ findings band.
+- **`POST /api/knowledge/competitors/{entity_id}/deepen`** — frontend-callable endpoint that enqueues a single deep-profile work item. Idempotent (skips if already pending). Wired into `webapp/web/lib/api.ts:deepenCompetitor`.
+- **"Deepen profile" button** on competitor cards (list view) and on the detail page header. One click → queued; the intel agent picks up on next loop.
+- **14 unit tests** in `tests/test_llm_deep_profile.py` covering JSON parsing (strict / fenced / prose-wrapped), low-confidence drop, malformed responses, and end-to-end happy path.
+
+### Changed
+- **Confidence bands uncapped to 100%**: 0 findings → 10%, 1-2 → 30%, 3-4 → 60%, 5-7 → 90%, **8+ → 100%** (was capped at 90%).
+- **`/api/knowledge/entities` and `/api/knowledge/competitors`** now stash `_finding_count` and `_depth_band` ("empty" / "shallow" / "medium" / "deep" / "comprehensive") onto each entity's `metadata_json` for the UI.
+- **UI relabel**: `30% confidence` → `30% · 1 finding · Shallow profile` with a tooltip explaining the bands. Same change on both list and detail pages.
+
+### Why this matters
+The user couldn't see *what to do* to deepen a profile — the badge said "30% confidence" but no UI affordance pointed at the path forward. Now the badge tells them what they have ("1 finding · Shallow") and a Sparkle button next to it spawns 8–10 LLM probing calls across recent moves, pricing, moat, weaknesses, regulatory, leadership — exactly the categories a PM cares about. Free on Groq quota. No search-provider dependency.
+
 ## [0.20.1] — 2026-04-29 — Impact tab: full effect text + evidence links
 
 User report: *"in the impact section only limited text is shown for 2nd order effect on expanding a trend — help expand it fully plus add the source / evidence."*

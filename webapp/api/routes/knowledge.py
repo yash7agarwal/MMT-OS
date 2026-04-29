@@ -63,6 +63,9 @@ def list_entities(
             .group_by(KnowledgeObservation.entity_id)
             .all()
         )
+        # v0.20.2: uncap to 1.0 so a fully-profiled competitor can show 100%,
+        # not 90%. Also stash the raw count + band on metadata_json so the UI
+        # can show "X findings · needs N more for next band".
         for e in entities:
             count = obs_counts.get(e.id, 0)
             if count == 0:
@@ -71,8 +74,22 @@ def list_entities(
                 e.confidence = 0.3
             elif count <= 4:
                 e.confidence = 0.6
-            else:
+            elif count <= 7:
                 e.confidence = 0.9
+            else:
+                e.confidence = 1.0
+            # Decorate metadata_json (response-only — these are session-level
+            # SQLAlchemy attributes that won't auto-commit; safe transient mutation).
+            md = dict(e.metadata_json or {})
+            md["_finding_count"] = count
+            md["_depth_band"] = (
+                "empty" if count == 0
+                else "shallow" if count <= 2
+                else "medium" if count <= 4
+                else "deep" if count <= 7
+                else "comprehensive"
+            )
+            e.metadata_json = md
 
     return entities
 
@@ -319,6 +336,9 @@ def list_competitors(project_id: int = Query(...), db: Session = Depends(get_db)
             .group_by(KnowledgeObservation.entity_id)
             .all()
         )
+        # v0.20.2: uncap to 1.0 so a fully-profiled competitor can show 100%,
+        # not 90%. Also stash the raw count + band on metadata_json so the UI
+        # can show "X findings · needs N more for next band".
         for e in entities:
             count = obs_counts.get(e.id, 0)
             if count == 0:
@@ -327,8 +347,22 @@ def list_competitors(project_id: int = Query(...), db: Session = Depends(get_db)
                 e.confidence = 0.3
             elif count <= 4:
                 e.confidence = 0.6
-            else:
+            elif count <= 7:
                 e.confidence = 0.9
+            else:
+                e.confidence = 1.0
+            # Decorate metadata_json (response-only — these are session-level
+            # SQLAlchemy attributes that won't auto-commit; safe transient mutation).
+            md = dict(e.metadata_json or {})
+            md["_finding_count"] = count
+            md["_depth_band"] = (
+                "empty" if count == 0
+                else "shallow" if count <= 2
+                else "medium" if count <= 4
+                else "deep" if count <= 7
+                else "comprehensive"
+            )
+            e.metadata_json = md
 
     return entities
 
@@ -965,6 +999,60 @@ def reap_orphans(
         w.completed_at = datetime.utcnow()
     db.commit()
     return {"reaped": len(orphans)}
+
+
+@router.post("/competitors/{entity_id}/deepen")
+def deepen_competitor(
+    entity_id: int,
+    n_questions: int = Query(10, ge=3, le=20),
+    db: Session = Depends(get_db),
+):
+    """v0.20.2: enqueue a `competitor_deep_profile` work item for a single
+    competitor. The intel agent picks it up and runs the LLM-deep-profile
+    flow — generating probing prompts and extracting structured facts.
+
+    Idempotent: if a pending deep-profile item already exists for this
+    entity, returns 200 with `created=false`.
+    """
+    entity = db.get(KnowledgeEntity, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    if entity.entity_type != "company":
+        raise HTTPException(status_code=400, detail=f"Entity is {entity.entity_type}, not company")
+
+    # Skip if a pending deepen job for this entity already exists — prevents
+    # the user clicking Deepen twice from doubling cost.
+    pending = (
+        db.query(WorkItem)
+        .filter(
+            WorkItem.project_id == entity.project_id,
+            WorkItem.agent_type == "competitive_intel",
+            WorkItem.category == "competitor_deep_profile",
+            WorkItem.status == "pending",
+        )
+        .all()
+    )
+    for w in pending:
+        ctx = w.context_json or {}
+        if ctx.get("entity_id") == entity_id or ctx.get("competitor_name") == entity.name:
+            return {"created": False, "work_item_id": w.id, "reason": "already pending"}
+
+    item = WorkItem(
+        project_id=entity.project_id,
+        agent_type="competitive_intel",
+        priority=10,
+        category="competitor_deep_profile",
+        description=f"Deepen profile of {entity.name} via LLM probing prompts",
+        context_json={
+            "competitor_name": entity.name,
+            "entity_id": entity_id,
+            "n_questions": n_questions,
+        },
+        status="pending",
+    )
+    db.add(item)
+    db.commit()
+    return {"created": True, "work_item_id": item.id, "competitor": entity.name}
 
 
 @router.post("/work-items/reseed-discovery")

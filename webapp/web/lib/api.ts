@@ -233,6 +233,12 @@ export const api = {
       `/api/knowledge/work-items/reap-orphans?project_id=${projectId}`,
       { method: 'POST' }
     ),
+  // v0.20.2
+  deepenCompetitor: (entityId: number, nQuestions = 10) =>
+    request<{ created: boolean; work_item_id: number; competitor?: string; reason?: string }>(
+      `/api/knowledge/competitors/${entityId}/deepen?n_questions=${nQuestions}`,
+      { method: 'POST' }
+    ),
   listSessions: (projectId: number, agentType?: string) =>
     request<AgentSession[]>(
       `/api/knowledge/sessions?project_id=${projectId}${agentType ? `&agent_type=${agentType}` : ''}`

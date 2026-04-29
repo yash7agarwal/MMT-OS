@@ -488,6 +488,14 @@ Return ONLY a JSON array. Each item:
         if item.category in ("industry_identification", "contrarian_discovery"):
             return self._llm_discover_competitors(item)
 
+        # v0.20.2: LLM-driven deep profile — replaces the Tavily-dependent
+        # competitor_profile path when the user clicks "Deepen profile" on a
+        # competitor card. Produces 8-10 sharp, project-specific facts via
+        # probing prompts; pushes a competitor from 30% (1 finding) into
+        # the 5+ findings band → 100% on the dynamic-confidence formula.
+        if item.category == "competitor_deep_profile":
+            return self._llm_deep_profile(item)
+
         # Use efficient researcher for competitor profiles (1-2 LLM calls instead of 10-15)
         if item.category in ("competitor_profile", "financial_deep_dive"):
             competitor_name = context.get("competitor_name") or item.description.split("for ")[-1].split(",")[0].strip()
@@ -738,6 +746,109 @@ Return ONLY a JSON array. Each item:
             ),
             "entities_created": saved,
             "observations_added": saved,
+        }
+        return self._current_result
+
+    def _llm_deep_profile(self, item: WorkItem) -> dict:
+        """v0.20.2: deepen a single competitor's profile via LLM probing prompts.
+
+        Context payload (item.context_json) MUST include either:
+          - {"competitor_name": "..."} (preferred — exact match)
+          - {"entity_id": int} (resolves the entity name from DB)
+        """
+        from agent import llm_deep_profile as ldp
+
+        ctx = item.context_json or {}
+        competitor_name = (ctx.get("competitor_name") or "").strip()
+        if not competitor_name and ctx.get("entity_id"):
+            entities = self.knowledge.find_entities(entity_type="company")
+            for e in entities:
+                if e.get("id") == ctx["entity_id"]:
+                    competitor_name = e["name"]
+                    break
+        if not competitor_name:
+            self._current_result = {
+                "status": "failed",
+                "summary": "competitor_deep_profile: no competitor_name or entity_id in context_json",
+                "entities_created": 0, "observations_added": 0,
+            }
+            return self._current_result
+
+        # Resolve company entity (don't create — it must already exist for
+        # a deepen-profile request). Avoids accidentally creating a stub
+        # entity if the user passed a typo.
+        from agent.extraction_guard import validate_extraction
+        guard = validate_extraction(competitor_name, "company", self.project_name)
+        if not guard.ok:
+            self._current_result = {
+                "status": "completed",
+                "summary": f"Rejected: {guard.reason}",
+                "entities_created": 0, "observations_added": 0,
+            }
+            return self._current_result
+
+        candidates = self.knowledge.find_entities(entity_type="company", name_like=competitor_name)
+        if not candidates:
+            self._current_result = {
+                "status": "failed",
+                "summary": f"competitor_deep_profile: no company entity matching {competitor_name!r}",
+                "entities_created": 0, "observations_added": 0,
+            }
+            return self._current_result
+        company_id = candidates[0]["id"]
+
+        n_questions = int(ctx.get("n_questions") or 10)
+        profile = ldp.deep_profile_competitor(
+            competitor=competitor_name,
+            project_name=self.project_name,
+            project_description=self.project_description,
+            n_questions=n_questions,
+        )
+
+        if not profile.facts:
+            self._current_result = {
+                "status": "completed",
+                "summary": (
+                    f"Deep-profile {competitor_name}: 0 facts saved "
+                    f"(rejected {profile.rejected_low_confidence} low-confidence)"
+                ),
+                "entities_created": 0, "observations_added": 0,
+            }
+            return self._current_result
+
+        saved = 0
+        for f in profile.facts:
+            content = f.answer
+            if f.date_qualifier:
+                content = f"{content} ({f.date_qualifier})"
+            # Question becomes a header so the observation reads like Q&A.
+            content = f"**{f.question}**\n\n{content}"
+            source_url = f.source_hint if f.source_hint.startswith("http") else ""
+            note = f.source_hint if f.source_hint and not source_url else ""
+            if note:
+                content += f"\n\n_Source: {note}_"
+            try:
+                self.knowledge.add_observation(
+                    entity_id=company_id,
+                    obs_type=f.observation_type,
+                    content=content,
+                    source_url=source_url,
+                    lens_tags=f.lens_tags or ["growth"],
+                )
+                saved += 1
+            except Exception as exc:
+                logger.warning("[deep_profile] failed to persist observation: %s", exc)
+
+        self._current_result = {
+            "status": "completed",
+            "summary": (
+                f"Deep-profile {competitor_name}: {saved} facts saved "
+                f"(rejected {profile.rejected_low_confidence} low-confidence). "
+                f"Categories: {sorted({f.category for f in profile.facts})}"
+            ),
+            "entities_created": 0,
+            "observations_added": saved,
+            "quality": {"deep_profile_facts": saved, "deep_profile_rejected": profile.rejected_low_confidence},
         }
         return self._current_result
 
