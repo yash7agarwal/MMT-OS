@@ -821,3 +821,46 @@ def list_sessions(
     if agent_type:
         q = q.filter(AgentSession.agent_type == agent_type)
     return q.order_by(AgentSession.started_at.desc()).limit(limit).all()
+
+
+@router.post("/work-items/reseed-discovery")
+def reseed_discovery(
+    project_id: int = Query(...),
+    db: Session = Depends(get_db),
+):
+    """v0.19.1: Re-inject industry_identification + contrarian_discovery work
+    items so existing projects pick up the v0.19.0 LLM-as-search path on the
+    next intel run. Skips re-creation if pending items already exist for that
+    category."""
+    from agent.competitive_intel_agent import CompetitiveIntelAgent
+
+    agent = CompetitiveIntelAgent(project_id=project_id, db=db)
+    seeds = agent.seed_backlog()
+    created = 0
+    skipped = 0
+    for seed in seeds:
+        existing = (
+            db.query(WorkItem)
+            .filter(
+                WorkItem.project_id == project_id,
+                WorkItem.agent_type == agent.agent_type,
+                WorkItem.category == seed["category"],
+                WorkItem.status == "pending",
+            )
+            .first()
+        )
+        if existing:
+            skipped += 1
+            continue
+        db.add(WorkItem(
+            project_id=project_id,
+            agent_type=agent.agent_type,
+            priority=seed.get("priority", 8),
+            category=seed["category"],
+            description=seed["description"],
+            context_json=seed.get("context_json"),
+            status="pending",
+        ))
+        created += 1
+    db.commit()
+    return {"created": created, "skipped_existing_pending": skipped}

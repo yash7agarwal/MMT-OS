@@ -2,6 +2,16 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.19.1] — 2026-04-29 — Reseed-discovery endpoint so existing projects benefit from v0.19.0
+
+Existing projects (Sarvam, MakeMyTrip, Platinum) had already completed their `industry_identification` + `contrarian_discovery` seed work-items in older deploys. The next intel run found nothing pending in those categories and skipped the new LLM-as-search path entirely — silent no-op.
+
+### Added
+- `POST /api/knowledge/work-items/reseed-discovery?project_id=X` — re-injects the two LLM-discovery seeds as pending. Idempotent: skips if pending items for that category already exist. Lets the next intel run actually fire `_llm_discover_competitors()`.
+
+### Operating note
+- After every architectural change to a discovery work-item handler, hit reseed on existing projects. Otherwise the change only affects newly-created projects.
+
 ## [0.19.0] — 2026-04-29 — LLM-as-search for competitor discovery
 
 User insight: *"if I ask Claude or GPT 'who are the competitors of company XYZ' they answer from training data — why does Prism need a Tavily call?"*
