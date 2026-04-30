@@ -2,6 +2,63 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.22.0] — 2026-04-30 — Per-file upload progress + content quality system (no compromise)
+
+Two user complaints, addressed in one ship through the full SDLC stack:
+
+> *"during the upload process it's not clear whether processing really is happening, how much is left, how it's being organized."*
+>
+> *"the same finding is being reported 10s of times. For example in Airbnb same tier-3 finding is repeated so many times. Why is content quality not being maintained? Create strict system to maintain the content richness and quality of everything that is being shown on the platform. No compromise on accuracy and quality."*
+
+### Added — per-file upload progress
+- **`POST /api/knowledge/projects/{id}/classify-one-report`** — single-PDF endpoint used by frontend's per-file iteration loop. Same extract+classify+save pipeline as `bulk-upload-reports`, no synthesis triggered (synthesis batches once at the end via Industry Pulse refresh).
+- **Frontend per-file iteration**: drop a folder → frontend iterates each PDF sequentially → user sees live progress (`12 of 30 · openai-10K-2024.pdf · Last matched: Anthropic ✓`) with a Cancel button. After all done, single Industry Pulse refresh triggers synthesis.
+- 5 integration tests pinning the contract (`tests/test_classify_one_endpoint.py`).
+
+### Added — content quality system
+
+**`agent/quality_guard.py`** — hard gate on every observation written to the knowledge graph:
+- `validate_observation()` — hard rejects: empty, <30 chars, placeholder strings (`TODO`, `TBD`), marketing fluff regex (`strategic synergies`, `leveraging market`) when no specific datapoint accompanies it.
+- `is_duplicate_observation(db, entity_id, content)` — Jaccard 3-gram similarity ≥0.85 against existing observations on the same entity → returns the existing id so the caller merges instead of inserting.
+- `score_observation()` — 0..1 composite score: length sweet-spot (60–300 chars), specificity (numbers/dates/proper nouns), source URL well-formed, lens-tags present, non-fluff bonus.
+
+**`KnowledgeStore.add_observation()` now routes through the guard:**
+- Hard reject → returns `None` (logged at INFO with reason)
+- Duplicate found → bumps `dedupe_count`, copies non-empty `source_url` if existing was empty, returns existing id
+- Otherwise → inserts with `quality_score` populated
+
+**Schema additions** (idempotent `ALTER TABLE` migration):
+- `KnowledgeObservation.quality_score: Float DEFAULT 0.0 NOT NULL`
+- `KnowledgeObservation.dedupe_count: Integer DEFAULT 0 NOT NULL`
+
+**API filtering**:
+- `GET /api/knowledge/entities/{id}/observations?include_low_quality=false` — default-hides `quality_score < 0.3`
+- `GET /api/knowledge/entities/{id}` — same flag, applied to nested observations
+
+**Retroactive cleanup** (`scripts/dedupe_observations.py`):
+- `--dry-run` (default) — reports what would be merged, no writes
+- `--apply` — actually merges duplicates per-entity, recomputes quality_score on survivors
+- Idempotent: second run reports 0 dupes since the live `add_observation` gate now blocks new ones
+
+**Frontend signals on competitor detail page**:
+- `q=0.85` chip on each observation (color-coded: green ≥0.7, gray 0.4–0.7, amber <0.4)
+- `seen 12×` cyan badge when `dedupe_count > 0` — answers the user's "why is this finding repeated?" directly: it isn't anymore; it's one row with a count
+
+### Tests
+- **+25 unit tests** in `tests/test_quality_guard.py` covering normalize edge cases, Jaccard symmetry, duplicate detection (verbatim, case+punct, near-paraphrase, reordering at default vs loose threshold), validate hard-rejects (empty, short, placeholder, fluff with/without datapoint), score_observation in [0, 1] across edge cases, and 4 integration tests proving `KnowledgeStore.add_observation` actually merges + rejects + scores end-to-end.
+- **+5 integration tests** for `/classify-one-report` endpoint (filename match, body-text match, industry-report-unmatched, magic-byte rejection, sub-2s latency).
+- **Total: 259/259 backend tests pass** (was 234 → +25 net new).
+
+### Why this matters
+Before today, the same Airbnb tier-3 effect could land 12 times under one entity. The user couldn't tell whether the agent had found 12 distinct things or one thing 12 times. Now: that finding is ONE row with `dedupe_count: 11`, displayed as "seen 12× · q=0.65". Marketing fluff observations (`"leveraging market opportunities to drive innovation"`) are rejected at the gate, never land in the DB at all. Default UI views hide `quality_score < 0.3` so users see signal, not noise — with a "show low-quality" escape valve when they want to dig.
+
+### Process — second feature_endpoint shipped through full SDLC stack
+- `/plan` → `tasks/plan_v0_21_5.md` + `tasks/plan_v0_22_0.md`
+- `/test`-first: 25 quality_guard tests RED → GREEN; 5 endpoint tests RED → GREEN
+- `/build`
+- Code-reviewer agent on diff (pending — runs after this commit before push)
+- Migration is additive + idempotent; safe on Postgres prod
+
 ## [0.21.4] — 2026-04-30 — Bulk upload reliability: deterministic body-text matcher + thread-pool extraction + deferred bucket — first ship through full SDLC
 
 After three consecutive 502 ROUTER_EXTERNAL_TARGET_CONNECTION_ERROR_CD8 failures from the bulk-upload endpoint reached the user, we instituted a workspace SDLC discipline rule (`feedback_sdlc_enforcement.md`) and shipped this fix through the full stack: `/plan` → `code-reviewer` agent → amended plan → `/test`-first → `/build` → `code-reviewer` re-review → `/ship`. Plan + amendments at `tasks/plan.md`; review log at `tasks/plan.md` §7b.

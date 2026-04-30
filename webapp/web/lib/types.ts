@@ -144,6 +144,9 @@ export interface KnowledgeObservation {
   recorded_at: string
   source_url: string | null
   source_agent: string | null
+  // v0.22.0 quality fields
+  quality_score?: number
+  dedupe_count?: number
 }
 
 export interface KnowledgeArtifact {

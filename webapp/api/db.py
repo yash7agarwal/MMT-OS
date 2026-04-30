@@ -133,6 +133,21 @@ def init_db() -> None:
             if "last_progress_at" not in existing_cols:
                 conn.execute(text("ALTER TABLE work_items ADD COLUMN last_progress_at TIMESTAMP"))
 
+    # v0.22.0 — content quality columns on observations.
+    if "knowledge_observations" in inspector.get_table_names():
+        existing_cols = {c["name"] for c in inspector.get_columns("knowledge_observations")}
+        with engine.begin() as conn:
+            if "quality_score" not in existing_cols:
+                # Both engines: SQLite stores as REAL, Postgres as DOUBLE PRECISION.
+                # NOT NULL with default 0.0 — backfills existing rows safely.
+                conn.execute(text(
+                    "ALTER TABLE knowledge_observations ADD COLUMN quality_score FLOAT DEFAULT 0.0 NOT NULL"
+                ))
+            if "dedupe_count" not in existing_cols:
+                conn.execute(text(
+                    "ALTER TABLE knowledge_observations ADD COLUMN dedupe_count INTEGER DEFAULT 0 NOT NULL"
+                ))
+
     # v0.21.2 — soft-hide flag on projects.
     if "projects" in inspector.get_table_names():
         existing_cols = {c["name"] for c in inspector.get_columns("projects")}

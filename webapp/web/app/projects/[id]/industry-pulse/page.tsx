@@ -69,6 +69,14 @@ export default function IndustryPulsePage({ params }: { params: { id: string } }
   const [error, setError] = useState<string | null>(null)
   // v0.21.1 — bulk upload state
   const [uploading, setUploading] = useState(false)
+  // v0.21.5 — per-file iteration progress
+  const [progress, setProgress] = useState<{
+    done: number
+    total: number
+    current?: string
+    lastResult?: { filename: string; matched_entity_name: string | null; status: string }
+  } | null>(null)
+  const cancelRef = useRef(false)
   const [manifest, setManifest] = useState<{
     matched_count: number
     unmatched_count: number
@@ -93,21 +101,79 @@ export default function IndustryPulsePage({ params }: { params: { id: string } }
       setError('No PDFs in selection. Drop a folder of annual reports or pick multiple PDF files.')
       return
     }
+    // v0.21.5: per-file client-side iteration. Each file goes through the
+    // /classify-one-report endpoint (~150–500ms each); user sees live progress
+    // instead of opaque 6–25s spinner. After all done, refresh Industry Pulse
+    // to trigger synthesis.
     setUploading(true)
     setError(null)
     setManifest(null)
-    try {
-      const r = await api.bulkUploadReports(projectId, pdfs, true)
-      setManifest(r)
-      setShowManifest(true)
-      // Reload Industry Pulse since synthesis ran in-line.
-      await load()
-    } catch (e: any) {
-      setError(e.message || String(e))
-    } finally {
-      setUploading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+    cancelRef.current = false
+    setProgress({ done: 0, total: pdfs.length })
+
+    const matched: any[] = []
+    const unmatched: any[] = []
+    const failed: any[] = []
+
+    for (let i = 0; i < pdfs.length; i++) {
+      if (cancelRef.current) break
+      const f = pdfs[i]
+      setProgress({ done: i, total: pdfs.length, current: f.name, lastResult: progress?.lastResult })
+      try {
+        const r = await api.classifyOneReport(projectId, f)
+        const record = {
+          filename: r.filename,
+          artifact_id: r.artifact_id,
+          matched_entity_id: r.matched_entity_id,
+          matched_entity_name: r.matched_entity_name,
+          match_confidence: r.match_confidence,
+          match_method: r.match_method,
+          period: r.period,
+          reasoning: r.reasoning,
+          text_chars: r.text_chars,
+        }
+        if (r.status === 'matched') matched.push(record)
+        else unmatched.push(record)
+        setProgress({
+          done: i + 1, total: pdfs.length,
+          current: i + 1 < pdfs.length ? pdfs[i + 1].name : undefined,
+          lastResult: { filename: f.name, matched_entity_name: r.matched_entity_name, status: r.status },
+        })
+      } catch (e: any) {
+        failed.push({ filename: f.name, error: e.message || String(e) })
+        setProgress({
+          done: i + 1, total: pdfs.length,
+          current: i + 1 < pdfs.length ? pdfs[i + 1].name : undefined,
+          lastResult: { filename: f.name, matched_entity_name: null, status: 'failed' },
+        })
+      }
     }
+
+    const cancelled = cancelRef.current ? pdfs.slice(matched.length + unmatched.length + failed.length).map(f => ({
+      filename: f.name, reason: 'cancelled_by_user',
+    })) : []
+
+    setManifest({
+      matched_count: matched.length,
+      unmatched_count: unmatched.length,
+      failed_count: failed.length,
+      deferred_count: cancelled.length,
+      synthesized_profiles: 0,
+      synthesizing: matched.length > 0,
+      synthesizing_count: new Set(matched.map(m => m.matched_entity_id).filter(Boolean)).size,
+      matched, unmatched, failed,
+      deferred: cancelled,
+    })
+    setShowManifest(true)
+    setProgress(null)
+    setUploading(false)
+    if (fileInputRef.current) fileInputRef.current.value = ''
+    // Refresh Industry Pulse — will lazy-trigger synthesis if profiles are stale.
+    await load()
+  }
+
+  const handleCancelUpload = () => {
+    cancelRef.current = true
   }
 
   const handleReassign = async (artifactId: number, entityId: number) => {
@@ -239,11 +305,43 @@ export default function IndustryPulsePage({ params }: { params: { id: string } }
             … or pick multiple PDFs
           </label>
         </div>
-        {uploading && (
-          <p className="text-xs text-zinc-500 mt-3">
-            Extracting + classifying + synthesizing. Each PDF takes a few seconds for
-            extraction, plus ~10–30s synthesis per matched competitor (parallel).
-          </p>
+        {uploading && progress && (
+          <div className="mt-4 space-y-2">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="text-zinc-200">
+                <span className="font-medium">{progress.done}</span>
+                <span className="text-zinc-500"> of {progress.total} files processed</span>
+                {progress.current && (
+                  <span className="text-zinc-400 ml-2 font-mono text-xs">· {progress.current}</span>
+                )}
+              </span>
+              <button
+                onClick={handleCancelUpload}
+                className="text-xs text-amber-300 hover:text-amber-200 underline underline-offset-2"
+              >
+                Cancel
+              </button>
+            </div>
+            <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-emerald-500 transition-all duration-200"
+                style={{ width: `${progress.total > 0 ? (progress.done / progress.total) * 100 : 0}%` }}
+              />
+            </div>
+            {progress.lastResult && (
+              <div className="text-xs text-zinc-500 font-mono">
+                Last: <span className="text-zinc-400">{progress.lastResult.filename}</span>
+                <span className="text-zinc-600 mx-1.5">→</span>
+                {progress.lastResult.status === 'matched' && progress.lastResult.matched_entity_name ? (
+                  <span className="text-emerald-400">{progress.lastResult.matched_entity_name}</span>
+                ) : progress.lastResult.status === 'unmatched' ? (
+                  <span className="text-amber-400">unmatched</span>
+                ) : (
+                  <span className="text-red-400">failed</span>
+                )}
+              </div>
+            )}
+          </div>
         )}
       </div>
 

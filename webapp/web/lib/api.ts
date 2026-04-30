@@ -291,6 +291,36 @@ export const api = {
       artifact_id?: number
     }>(`/api/knowledge/industry-pulse?project_id=${projectId}`, { timeoutMs: 120_000 }),
   // v0.21.1: bulk folder upload + auto-classify
+  // v0.21.5: per-file classify endpoint for live progress UI.
+  // Frontend iterates the folder calling this once per PDF, rendering
+  // progress as each lands. After loop completes, refresh Industry Pulse
+  // to trigger synthesis.
+  classifyOneReport: async (projectId: number, file: File, signal?: AbortSignal) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await fetch(
+      `/api/knowledge/projects/${projectId}/classify-one-report`,
+      { method: 'POST', body: fd, signal }
+    )
+    if (!res.ok) {
+      const text = await res.text().catch(() => '')
+      let msg = `classify-one-report ${res.status}`
+      try { msg = JSON.parse(text).detail || msg } catch { msg = text.slice(0, 200) || msg }
+      throw new Error(msg)
+    }
+    return res.json() as Promise<{
+      status: 'matched' | 'unmatched'
+      filename: string
+      artifact_id: number
+      matched_entity_id: number | null
+      matched_entity_name: string | null
+      match_confidence: string
+      match_method: string
+      period: { fiscal_year: number | null; quarter: number | null; period_label: string; is_annual: boolean } | null
+      reasoning: string
+      text_chars: number
+    }>
+  },
   bulkUploadReports: async (projectId: number, files: File[], autoSynthesize = true) => {
     const fd = new FormData()
     files.forEach(f => fd.append('files', f))

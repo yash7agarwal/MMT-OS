@@ -259,6 +259,9 @@ class KnowledgeObservationOut(BaseModel):
     recorded_at: UTCDatetime
     source_url: str | None
     source_agent: str | None
+    # v0.22.0 quality fields
+    quality_score: float = 0.0
+    dedupe_count: int = 0
 
 
 class KnowledgeArtifactOut(BaseModel):

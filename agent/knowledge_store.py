@@ -401,8 +401,59 @@ class KnowledgeStore:
         source_url: str | None = None,
         observed_at: datetime | None = None,
         lens_tags: list[str] | None = None,
-    ) -> int:
-        """Record an observation about an entity. Returns observation id."""
+    ) -> int | None:
+        """Record an observation about an entity. Returns observation id, or
+        None if the content was rejected by the quality guard.
+
+        v0.22.0 quality guard pipeline:
+          1. validate_observation — hard reject (empty, <30 chars, placeholder,
+             marketing fluff without specific datapoint)
+          2. is_duplicate_observation — if ≥85% Jaccard similarity to an
+             existing observation on this entity, bump dedupe_count + recorded_at
+             on the existing row, copy source_url if newer is better, return id
+          3. score_observation — compute quality_score in [0, 1] for default-hide
+             low-quality filtering
+          4. Insert as today
+        """
+        from agent import quality_guard as qg
+
+        # 1. Hard validation
+        accepted, reason = qg.validate_observation(content, source_url)
+        if not accepted:
+            logger.info(
+                "[quality_guard] rejected observation on entity %d: %s | content=%r",
+                entity_id, reason, content[:80],
+            )
+            return None
+
+        # 2. Dedupe — bump existing if found
+        existing_id, sim = qg.is_duplicate_observation(self.db, entity_id, content)
+        if existing_id is not None:
+            existing = self.db.query(KnowledgeObservation).filter(
+                KnowledgeObservation.id == existing_id
+            ).first()
+            if existing is not None:
+                existing.dedupe_count = (existing.dedupe_count or 0) + 1
+                existing.recorded_at = datetime.utcnow()
+                # Upgrade source_url if the new one is non-empty and existing was empty
+                if source_url and not (existing.source_url or "").strip():
+                    existing.source_url = source_url
+                # v0.22.0 review must-fix #3: re-score on merge using the
+                # NEW emission's signals (URL, lens_tags). Take max so a
+                # high-quality emission upgrades a previously low-quality
+                # row instead of leaving it stuck below the 0.3 default-hide
+                # threshold.
+                new_score = qg.score_observation(content, source_url, lens_tags)
+                existing.quality_score = max(existing.quality_score or 0.0, new_score)
+                self.db.commit()
+                logger.debug(
+                    "[quality_guard] merged observation into existing id=%d (sim=%.2f, count=%d, score=%.2f)",
+                    existing_id, sim, existing.dedupe_count, existing.quality_score,
+                )
+                return existing_id
+
+        # 3. Score + insert
+        score = qg.score_observation(content, source_url, lens_tags)
         obs = KnowledgeObservation(
             entity_id=entity_id,
             observation_type=obs_type,
@@ -412,11 +463,13 @@ class KnowledgeStore:
             observed_at=observed_at or datetime.utcnow(),
             source_agent=self.agent_type,
             lens_tags=lens_tags,
+            quality_score=score,
+            dedupe_count=0,
         )
         self.db.add(obs)
         self.db.commit()
         self.db.refresh(obs)
-        logger.debug(f"Added observation {obs.id} for entity {entity_id}")
+        logger.debug(f"Added observation {obs.id} for entity {entity_id} (score={score:.2f})")
         return obs.id
 
     def get_observations(

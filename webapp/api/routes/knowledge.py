@@ -98,18 +98,20 @@ def list_entities(
 
 
 @router.get("/entities/{entity_id}", response_model=KnowledgeEntityDetail)
-def get_entity(entity_id: int, db: Session = Depends(get_db)):
+def get_entity(
+    entity_id: int,
+    include_low_quality: bool = Query(False),
+    db: Session = Depends(get_db),
+):
     entity = db.get(KnowledgeEntity, entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
 
-    observations = (
-        db.query(KnowledgeObservation)
-        .filter(KnowledgeObservation.entity_id == entity_id)
-        .order_by(KnowledgeObservation.observed_at.desc())
-        .limit(20)
-        .all()
-    )
+    # v0.22.0: default-hide quality_score < 0.3
+    obs_q = db.query(KnowledgeObservation).filter(KnowledgeObservation.entity_id == entity_id)
+    if not include_low_quality:
+        obs_q = obs_q.filter(KnowledgeObservation.quality_score >= 0.3)
+    observations = obs_q.order_by(KnowledgeObservation.observed_at.desc()).limit(20).all()
 
     relations = (
         db.query(KnowledgeRelation)
@@ -243,8 +245,12 @@ def list_entity_observations(
     entity_id: int,
     obs_type: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
+    include_low_quality: bool = Query(False),
     db: Session = Depends(get_db),
 ):
+    """v0.22.0: hide observations with quality_score < 0.3 by default.
+    Pass `include_low_quality=true` to surface them (used by detail-page
+    'show low-quality' toggle)."""
     entity = db.get(KnowledgeEntity, entity_id)
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
@@ -252,6 +258,8 @@ def list_entity_observations(
     q = db.query(KnowledgeObservation).filter(KnowledgeObservation.entity_id == entity_id)
     if obs_type:
         q = q.filter(KnowledgeObservation.observation_type == obs_type)
+    if not include_low_quality:
+        q = q.filter(KnowledgeObservation.quality_score >= 0.3)
     return q.order_by(KnowledgeObservation.observed_at.desc()).limit(limit).all()
 
 
@@ -1178,6 +1186,106 @@ def auto_fetch_report(
         "doc_url": report.primary_doc_url,
         "annual_report_artifact_id": report_art.id,
         "business_history_artifact_id": profile_art.id,
+    }
+
+
+@router.post("/projects/{project_id}/classify-one-report")
+async def classify_one_report(
+    project_id: int,
+    file: UploadFile = File(...),
+    classification_strategy: str = Query("fast"),
+    db: Session = Depends(get_db),
+):
+    """v0.21.5: single-PDF endpoint used by frontend's per-file iteration.
+
+    Same extract+classify+save pipeline as `bulk_upload_reports` minus the
+    thread pool, deferred bucket, and synthesis kickoff. Returns one
+    classified record so the frontend can render live progress
+    (`12 of 30 · openai-10K-2024.pdf → OpenAI`).
+
+    Synthesis is NOT triggered per file. Frontend calls Industry Pulse once
+    after all files land — the existing `industry_pulse` endpoint
+    re-synthesizes only if profiles are stale relative to artifacts.
+    """
+    from agent.business_history import extract_text_from_pdf_bytes
+    from agent.bulk_report_classifier import classify, ClassifiedReport
+    from webapp.api.models import Project
+
+    if classification_strategy not in ("fast", "thorough"):
+        raise HTTPException(status_code=400, detail=f"classification_strategy must be 'fast' or 'thorough'")
+    allow_llm = (classification_strategy == "thorough")
+
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    competitors_q = (
+        db.query(KnowledgeEntity)
+        .filter(
+            KnowledgeEntity.project_id == project_id,
+            KnowledgeEntity.entity_type == "company",
+        )
+        .all()
+    )
+    competitors = [{"id": c.id, "name": c.name, "canonical_name": c.canonical_name} for c in competitors_q]
+    if not competitors:
+        raise HTTPException(status_code=400, detail="No competitors yet. Run intel agent first.")
+
+    fname = file.filename or "report.pdf"
+    try:
+        blob = await file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"read failed: {exc}")
+    if not blob:
+        raise HTTPException(status_code=400, detail="empty")
+    if len(blob) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="exceeds 50MB")
+    if blob[:4] != b"%PDF":
+        raise HTTPException(status_code=422, detail="not_a_pdf_magic_bytes")
+
+    text, meta = extract_text_from_pdf_bytes(blob)
+    if not text:
+        raise HTTPException(status_code=422, detail=meta.get("extraction_error") or "extraction yielded nothing")
+
+    cr: ClassifiedReport = classify(fname, text, competitors, allow_llm=allow_llm)
+
+    period_meta = {}
+    if cr.period:
+        period_meta = {
+            "fiscal_year": cr.period.fiscal_year,
+            "quarter": cr.period.quarter,
+            "period_label": cr.period.period_label,
+            "is_annual": cr.period.is_annual,
+        }
+
+    artifact = KnowledgeArtifact(
+        project_id=project_id,
+        artifact_type="annual_report" if (cr.period is None or cr.period.is_annual) else "quarterly_report",
+        title=(
+            f"{cr.matched_entity_name or 'Unmatched'} — "
+            f"{cr.period.period_label if cr.period else 'undated'} "
+            f"({fname})"
+        ),
+        content_md=text[:200_000],
+        entity_ids_json=[cr.matched_entity_id] if cr.matched_entity_id else None,
+        generated_by_agent=f"classify_one:{cr.match_method}",
+    )
+    db.add(artifact)
+    db.commit()
+    db.refresh(artifact)
+
+    is_matched = bool(cr.matched_entity_id) and cr.match_confidence in ("high", "medium")
+    return {
+        "status": "matched" if is_matched else "unmatched",
+        "filename": fname,
+        "artifact_id": artifact.id,
+        "matched_entity_id": cr.matched_entity_id,
+        "matched_entity_name": cr.matched_entity_name,
+        "match_confidence": cr.match_confidence,
+        "match_method": cr.match_method,
+        "period": period_meta or None,
+        "reasoning": cr.reasoning,
+        "text_chars": cr.text_chars,
     }
 
 

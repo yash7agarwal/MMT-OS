@@ -149,6 +149,29 @@ function ObservationCard({ obs }: { obs: KnowledgeObservation }) {
               <span className="text-xs text-zinc-600">
                 {new Date(obs.observed_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
               </span>
+              {/* v0.22.0: quality + dedupe badges */}
+              {typeof obs.quality_score === 'number' && obs.quality_score > 0 && (
+                <span
+                  className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
+                    obs.quality_score >= 0.7
+                      ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
+                      : obs.quality_score >= 0.4
+                      ? 'text-zinc-400 bg-zinc-800 border border-zinc-700'
+                      : 'text-amber-400 bg-amber-500/10 border border-amber-500/20'
+                  }`}
+                  title={`Quality score: ${obs.quality_score.toFixed(2)} of 1.00. Low scores get hidden by default; toggle "show low-quality" to surface.`}
+                >
+                  q={obs.quality_score.toFixed(2)}
+                </span>
+              )}
+              {typeof obs.dedupe_count === 'number' && obs.dedupe_count > 0 && (
+                <span
+                  className="text-[10px] font-medium px-1.5 py-0.5 rounded text-cyan-300 bg-cyan-500/10 border border-cyan-500/20"
+                  title="This finding was emitted multiple times by agents; merged into one record."
+                >
+                  seen {obs.dedupe_count + 1}×
+                </span>
+              )}
             </div>
             <h4 className="text-sm font-medium text-zinc-200 leading-snug">{title}</h4>
           </div>

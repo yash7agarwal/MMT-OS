@@ -210,6 +210,10 @@ class KnowledgeObservation(Base):
     )
     # Analytical lenses: e.g. ["monetization", "growth", "product_craft"]
     lens_tags: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # v0.22.0 quality guard: composite score in [0, 1] for default-hide of
+    # low-quality observations + dedupe_count for "seen N times" UI badge.
+    quality_score: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    dedupe_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     entity: Mapped[KnowledgeEntity] = relationship(back_populates="observations")
 
