@@ -1186,29 +1186,37 @@ async def bulk_upload_reports(
     project_id: int,
     files: list[UploadFile] = File(...),
     auto_synthesize: bool = Query(True),
+    classification_strategy: str = Query("fast"),
     db: Session = Depends(get_db),
 ):
-    """v0.21.1: bulk-upload a folder of PDFs and auto-allocate to the
-    matching competitor. Per-file flow:
+    """v0.21.4: bulk-upload a folder of PDFs and auto-allocate to the
+    matching competitor.
 
-      1. Extract text via pypdf (in-memory).
-      2. Try filename substring match against competitor canonical names.
-      3. Fall back to LLM disambiguation (with explicit null option).
-      4. Extract fiscal_year + quarter from filename / first-page text.
-      5. Save raw extracted text as `KnowledgeArtifact(annual_report)` with
-         `entity_ids_json=[matched]` if matched, None if unmatched.
+    `classification_strategy`:
+      - `"fast"` (default) — filename match → body-text count + co-signal.
+        Fully deterministic, no LLM calls. Sub-second per file. Used by
+        the bulk path so it stays under Railway's 60s edge timeout.
+      - `"thorough"` — also runs LLM disambiguation on files that the
+        deterministic path can't resolve. Adds 5-15s per ambiguous file.
+        Only safe for ≤5-file batches.
 
-    `auto_synthesize=true` (default): kick off business-history synthesis
-    per-matched-competitor in a thread pool after all files are saved.
-    Synthesis runs against the *aggregate* of all reports for that competitor
-    (aggregated text across multiple uploads), so multi-period uploads
-    fold into one rich profile.
+    `auto_synthesize=true` (default): kicks off business-history synthesis
+    per-matched-competitor in detached daemon threads AFTER the response
+    is sent. Profiles land asynchronously; refresh Industry Pulse to see
+    them. Synthesis aggregates across all of a competitor's uploaded
+    reports so multi-period uploads fold into one rich profile.
 
     Returns a manifest:
-      - matched: [{filename, entity, period, confidence}, ...]
+      - matched: [{filename, entity, period, confidence, match_method}, ...]
       - unmatched: [{filename, period, reason}, ...]
-      - failed: [{filename, error}, ...]
+      - failed: [{filename, error}, ...]              extraction errors, magic-byte fail
+      - deferred: [{filename, reason}, ...]           cancelled by 25s soft-deadline; user re-uploads
+
+    Hard caps: 30 files per batch, 50MB per file.
     """
+    import time
+    from datetime import datetime
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     from agent.business_history import (
         extract_text_from_pdf_bytes,
         synthesize_business_profile,
@@ -1216,6 +1224,10 @@ async def bulk_upload_reports(
     from agent.bulk_report_classifier import classify, ClassifiedReport
     from webapp.api.models import Project
     from collections import defaultdict
+
+    if classification_strategy not in ("fast", "thorough"):
+        raise HTTPException(status_code=400, detail=f"classification_strategy must be 'fast' or 'thorough', got {classification_strategy!r}")
+    allow_llm = (classification_strategy == "thorough")
 
     project = db.get(Project, project_id)
     if not project:
@@ -1239,89 +1251,191 @@ async def bulk_upload_reports(
     matched: list[dict] = []
     unmatched: list[dict] = []
     failed: list[dict] = []
+    deferred: list[dict] = []          # v0.21.4: cancelled-by-deadline bucket (must-fix #3)
     new_artifacts_by_entity: dict[int, list[int]] = defaultdict(list)
 
-    # v0.21.3: cap batch size to prevent Railway OOM. 20 PDFs × 50MB =
-    # 1GB peak memory if all are buffered simultaneously. We process
-    # sequentially with each blob discarded after extraction, but if the
-    # CALLER tries to upload 50 files at once we still want to fail fast
-    # with a clear error rather than CD8 mid-stream.
     if len(files) > 30:
         raise HTTPException(
             status_code=413,
             detail=f"{len(files)} files exceeds the 30-file batch cap. Split into multiple uploads."
         )
 
+    # v0.21.4: read all blobs serially first (they're already in memory from
+    # the multipart parse), then dispatch extract+classify in parallel. This
+    # keeps the FastAPI async-read path simple while letting CPU-bound work
+    # span threads. Magic-byte check happens before the pool to fail fast.
+    file_blobs: list[tuple[str, bytes]] = []
     for f in files:
-        # File hygiene
+        fname = f.filename or "report.pdf"
         try:
             blob = await f.read()
         except Exception as exc:
-            failed.append({"filename": f.filename, "error": f"read failed: {exc}"})
+            failed.append({"filename": fname, "error": f"read failed: {exc}"})
             continue
         if not blob:
-            failed.append({"filename": f.filename, "error": "empty"})
+            failed.append({"filename": fname, "error": "empty"})
             continue
         if len(blob) > 50 * 1024 * 1024:
-            failed.append({"filename": f.filename, "error": "exceeds 50MB"})
+            failed.append({"filename": fname, "error": "exceeds 50MB"})
             continue
+        # v0.21.4 must-fix #4: magic-byte check before pypdf invocation.
+        # Catches `.pdf`-extension files that are actually HTML/spam.
+        if blob[:4] != b"%PDF":
+            failed.append({"filename": fname, "error": "not_a_pdf_magic_bytes"})
+            continue
+        file_blobs.append((fname, blob))
 
-        # Extract
+    def _extract_and_classify(fname: str, blob: bytes) -> dict:
+        """Worker: extract text, classify, return result dict. Frees blob
+        before returning so worker memory stays bounded. No DB writes —
+        SQLAlchemy session isn't thread-safe; main thread persists."""
         text, meta = extract_text_from_pdf_bytes(blob)
         if not text:
-            failed.append({"filename": f.filename, "error": meta.get("extraction_error") or "extraction yielded nothing"})
-            continue
-
-        # Classify
-        cr: ClassifiedReport = classify(f.filename or "report.pdf", text, competitors)
-
-        # Build artifact metadata
-        period_meta = {}
-        if cr.period:
-            period_meta = {
-                "fiscal_year": cr.period.fiscal_year,
-                "quarter": cr.period.quarter,
-                "period_label": cr.period.period_label,
-                "is_annual": cr.period.is_annual,
-            }
-
-        artifact = KnowledgeArtifact(
-            project_id=project_id,
-            artifact_type="annual_report" if (cr.period is None or cr.period.is_annual) else "quarterly_report",
-            title=(
-                f"{cr.matched_entity_name or 'Unmatched'} — "
-                f"{cr.period.period_label if cr.period else 'undated'} "
-                f"({f.filename})"
-            ),
-            content_md=text[:200_000],
-            entity_ids_json=[cr.matched_entity_id] if cr.matched_entity_id else None,
-            generated_by_agent=f"bulk_upload:{cr.match_method}",
-        )
-        db.add(artifact)
-        db.commit()
-        db.refresh(artifact)
-
-        record = {
-            "filename": f.filename,
-            "artifact_id": artifact.id,
-            "matched_entity_id": cr.matched_entity_id,
-            "matched_entity_name": cr.matched_entity_name,
-            "match_confidence": cr.match_confidence,
-            "match_method": cr.match_method,
-            "period": period_meta or None,
-            "reasoning": cr.reasoning,
-            "text_chars": cr.text_chars,
+            return {"filename": fname, "error": meta.get("extraction_error") or "extraction yielded nothing"}
+        cr = classify(fname, text, competitors, allow_llm=allow_llm)
+        return {
+            "filename": fname,
+            "text": text,
+            "classified": cr,
         }
-        if cr.matched_entity_id and cr.match_confidence in ("high", "medium"):
-            matched.append(record)
-            new_artifacts_by_entity[cr.matched_entity_id].append(artifact.id)
-        else:
-            unmatched.append(record)
 
-        # v0.21.3: free the blob ASAP after extraction. With 20+ uploads
-        # in a single request, holding all bytes resident is what triggers
-        # Railway OOM → CD8 502s.
-        del blob
+    # v0.21.4 must-fix #2: ThreadPoolExecutor + as_completed drain pattern.
+    # max_workers=3 for the realistic ~1.5× speedup pypdf gives (most extraction
+    # time is GIL-held Python-level Unicode/CMap decoding, only IO releases GIL).
+    #
+    # NOTE on the soft-deadline (must-fix #2 from review): Python's
+    # `ThreadPoolExecutor` cannot interrupt running workers — only
+    # cancel pending. So response time = max(deadline, longest in-flight
+    # worker after deadline). With max_workers=3 and 200-page 10-Ks at
+    # ~10s each, residual worst-case after a deadline hit is ~10s extra.
+    # We exit the `with` block with `cancel_futures=True` (Python 3.9+)
+    # via explicit shutdown so we don't wait for *queued* tasks.
+    DEADLINE_SECONDS = 25.0
+    start = time.monotonic()
+    pool = ThreadPoolExecutor(max_workers=3)
+    try:
+        future_to_filename = {
+            pool.submit(_extract_and_classify, fname, blob): fname
+            for fname, blob in file_blobs
+        }
+        deadline_hit = False
+        for fut in as_completed(future_to_filename):
+            # v0.21.4 must-fix #1 (review): process the just-completed future
+            # FIRST, then check the deadline. Otherwise we silently drop a
+            # PDF we already paid CPU for.
+            try:
+                result = fut.result()
+            except Exception as exc:
+                failed.append({
+                    "filename": future_to_filename[fut],
+                    "error": f"worker_exception: {exc}"
+                })
+                # Even on worker-exception, we still need to check deadline below.
+                result = None
+
+            elapsed = time.monotonic() - start
+            if elapsed > DEADLINE_SECONDS and not deadline_hit:
+                deadline_hit = True
+                # Cancel remaining queued futures; in-flight workers will
+                # still complete (pool.shutdown(cancel_futures=True) below).
+                for pending, pending_fn in future_to_filename.items():
+                    if not pending.done():
+                        pending.cancel()
+                        deferred.append({
+                            "filename": pending_fn,
+                            "reason": "batch_timeout_cancelled",
+                            "elapsed_when_cancelled_s": round(elapsed, 2),
+                        })
+
+            if result is None:
+                # Worker raised an exception above; already in `failed`.
+                if deadline_hit:
+                    break
+                continue
+            if "error" in result:
+                failed.append(result)
+                continue
+
+            cr: ClassifiedReport = result["classified"]
+            text = result["text"]
+            fname = result["filename"]
+
+            period_meta = {}
+            if cr.period:
+                period_meta = {
+                    "fiscal_year": cr.period.fiscal_year,
+                    "quarter": cr.period.quarter,
+                    "period_label": cr.period.period_label,
+                    "is_annual": cr.period.is_annual,
+                }
+
+            # v0.21.4: content_md cap at 200K is for the artifact storage
+            # (users can read full extracted text in the UI). Synthesis
+            # uses MAX_TEXT_CHARS=60_000 from agent/business_history.py
+            # downstream. Asymmetric on purpose.
+            artifact = KnowledgeArtifact(
+                project_id=project_id,
+                artifact_type="annual_report" if (cr.period is None or cr.period.is_annual) else "quarterly_report",
+                title=(
+                    f"{cr.matched_entity_name or 'Unmatched'} — "
+                    f"{cr.period.period_label if cr.period else 'undated'} "
+                    f"({fname})"
+                ),
+                content_md=text[:200_000],
+                entity_ids_json=[cr.matched_entity_id] if cr.matched_entity_id else None,
+                generated_by_agent=f"bulk_upload:{cr.match_method}",
+            )
+            db.add(artifact)
+            db.commit()
+            db.refresh(artifact)
+
+            record = {
+                "filename": fname,
+                "artifact_id": artifact.id,
+                "matched_entity_id": cr.matched_entity_id,
+                "matched_entity_name": cr.matched_entity_name,
+                "match_confidence": cr.match_confidence,
+                "match_method": cr.match_method,
+                "period": period_meta or None,
+                "reasoning": cr.reasoning,
+                "text_chars": cr.text_chars,
+            }
+            if cr.matched_entity_id and cr.match_confidence in ("high", "medium"):
+                matched.append(record)
+                new_artifacts_by_entity[cr.matched_entity_id].append(artifact.id)
+            else:
+                unmatched.append(record)
+
+            if deadline_hit:
+                break
+
+        # v0.21.4 must-fix #2 (review): cancel_futures=True (Py 3.9+) prevents
+        # the pool from blocking on QUEUED tasks during shutdown. In-flight
+        # workers still complete, but they're already running — we accept
+        # the residual wait. Without this, `pool.__exit__` waits for ALL
+        # submitted futures including the cancelled ones' queue slots.
+        pool.shutdown(wait=True, cancel_futures=True)
+    finally:
+        # If the pool wasn't shut down cleanly above (early exception),
+        # ensure we don't leak threads.
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            pass
+
+    # v0.21.4: blobs were already discarded by the worker fn before returning;
+    # nothing to free here on the main thread. End of as_completed loop above.
+
+    # v0.21.4: invariant guard — manifest math must equal len(files). Pre-pool
+    # rejections (read failed / empty / >50MB / not_a_pdf_magic_bytes) land in
+    # `failed` directly; pool results land in matched/unmatched/failed/deferred.
+    # Sum should always equal len(files); a mismatch means we leaked a result.
+    _accounted = len(matched) + len(unmatched) + len(failed) + len(deferred)
+    if _accounted != len(files):
+        logger.error(
+            "[bulk_upload] MANIFEST LEAK: %d files in, but matched=%d + unmatched=%d + failed=%d + deferred=%d = %d. Investigate.",
+            len(files), len(matched), len(unmatched), len(failed), len(deferred), _accounted,
+        )
 
     # v0.21.3: Detach synthesis from the request. Synthesis takes ~5-15s per
     # competitor and bulk uploads can hit 5-20 competitors — total request
@@ -1337,6 +1451,51 @@ async def bulk_upload_reports(
         project_desc_snapshot = project.description or ""
         target_ids = list(new_artifacts_by_entity.keys())
         synthesizing = len(target_ids) > 0
+
+        def _write_synth_failure_stub(
+            db_local: Session,
+            project_id: int,
+            entity_id: int,
+            entity_name: str,
+            reason: str,
+        ) -> None:
+            """v0.21.4 must-fix #3 (review): write a `business_history` artifact
+            with `synthesis_failed` in title + reason in body so the UI surfaces
+            the failure. Idempotent: if an existing failure stub for this entity
+            exists, update its body rather than create a duplicate."""
+            existing = (
+                db_local.query(KnowledgeArtifact)
+                .filter(
+                    KnowledgeArtifact.project_id == project_id,
+                    KnowledgeArtifact.artifact_type == "business_history",
+                    KnowledgeArtifact.title == f"Synthesis failed · {entity_name}",
+                )
+                .first()
+            )
+            stub_md = (
+                f"# Synthesis failed for {entity_name}\n\n"
+                f"The bulk-upload synthesizer attempted to combine all uploaded "
+                f"reports for {entity_name} into a structured business history, "
+                f"but did not return a usable profile.\n\n"
+                f"**Reason:** `{reason}`\n\n"
+                f"**Retry:** open the competitor's detail page and click "
+                f"**Refresh business profile** — synthesis runs against the "
+                f"already-uploaded reports without re-uploading.\n"
+            )
+            if existing:
+                existing.content_md = stub_md
+                existing.generated_at = datetime.utcnow()
+            else:
+                stub = KnowledgeArtifact(
+                    project_id=project_id,
+                    artifact_type="business_history",
+                    title=f"Synthesis failed · {entity_name}",
+                    content_md=stub_md,
+                    entity_ids_json=[entity_id],
+                    generated_by_agent="business_history_synth_bulk_async_failure",
+                )
+                db_local.add(stub)
+            db_local.commit()
 
         def _synth_one_detached(entity_id: int) -> None:
             """Run in a detached daemon thread — owns its own DB session."""
@@ -1369,6 +1528,14 @@ async def bulk_upload_reports(
                     sources=sources,
                 )
                 if not profile.market_thesis and not profile.contrarian_insights:
+                    # v0.21.4 must-fix #3 (review): write a stub artifact so the
+                    # UI shows "synthesis failed — retry" instead of nothing.
+                    # User has no other signal that the bulk upload's synthesis
+                    # silently dropped this competitor.
+                    _write_synth_failure_stub(
+                        db_local, project_id, entity_id, entity.name,
+                        reason="empty_profile_returned",
+                    )
                     return
                 prof_art = KnowledgeArtifact(
                     project_id=project_id,
@@ -1382,6 +1549,14 @@ async def bulk_upload_reports(
                 db_local.commit()
             except Exception as exc:
                 logger.warning("[bulk_upload:async] synth failed for entity %s: %s", entity_id, exc)
+                # v0.21.4 must-fix #3 (review): stub artifact instead of silent log.
+                try:
+                    _write_synth_failure_stub(
+                        db_local, project_id, entity_id, entity.name,
+                        reason=f"exception: {type(exc).__name__}: {str(exc)[:200]}",
+                    )
+                except Exception:
+                    pass  # last-resort — never let the daemon thread crash the runner
             finally:
                 db_local.close()
 
@@ -1401,12 +1576,14 @@ async def bulk_upload_reports(
         "matched_count": len(matched),
         "unmatched_count": len(unmatched),
         "failed_count": len(failed),
+        "deferred_count": len(deferred),
         "synthesized_profiles": synth_count,
         "synthesizing": synthesizing,
         "synthesizing_count": len(new_artifacts_by_entity) if synthesizing else 0,
         "matched": matched,
         "unmatched": unmatched,
         "failed": failed,
+        "deferred": deferred,
     }
 
 

@@ -49,7 +49,7 @@ class ClassifiedReport:
     matched_entity_id: int | None = None
     matched_entity_name: str | None = None
     match_confidence: Literal["high", "medium", "low", "none"] = "none"
-    match_method: Literal["filename_substring", "llm_disambiguation", "manual", "none"] = "none"
+    match_method: Literal["filename_substring", "body_text_count", "llm_disambiguation", "manual", "none"] = "none"
     period: ReportPeriod | None = None
     reasoning: str = ""
     error: str | None = None
@@ -155,6 +155,144 @@ def _normalize_for_match(s: str) -> str:
     """Lowercase, strip non-alnum, collapse — so 'Microsoft Azure' and
     'microsoft-azure_2024' both reduce to the same comparable form."""
     return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+# ---------------------------------------------------------------------------
+# v0.21.4: deterministic body-text matcher with structural co-signal gate
+#
+# Background: an "AI Industry Report 2025" can mention OpenAI 100×, Anthropic
+# 30×, Google 25×. Pure dominance ratio (100/30 = 3.3×) above the 3× threshold
+# would misattribute the report to OpenAI. Code review (Apr 2026) caught
+# this. We now require a STRUCTURAL CO-SIGNAL in addition to dominance:
+#
+#   (a) competitor name appears in the filename, OR
+#   (b) competitor name appears in the first 200 chars of body (cover page), OR
+#   (c) competitor name appears within 500 chars of a 10-K/20-F/40-F marker
+#       (e.g. "UNITED STATES SECURITIES AND EXCHANGE COMMISSION").
+#
+# Without ANY of these, dominance alone returns None — we'd rather flag
+# unmatched than auto-attribute an industry report to a vendor.
+# ---------------------------------------------------------------------------
+
+
+_SEC_MARKERS = (
+    "united states securities and exchange commission",
+    "annual report pursuant to section",
+    "form 10-k",
+    "form 10k",
+    "form 20-f",
+    "form 20f",
+    "form 40-f",
+    "form 40f",
+)
+
+_LEGAL_SUFFIXES = (
+    ", inc.", " inc.", ", inc", " inc",
+    ", llc", " llc",
+    ", corp.", " corp.", ", corporation", " corporation",
+    ", co.", " co.",
+    " ltd", " limited",
+    " plc",
+    ", n.v.", " n.v.",
+)
+
+
+def _strip_legal_suffix(name: str) -> str:
+    """Lowercase + strip trailing legal suffix. 'Acme, Inc.' → 'acme'."""
+    n = name.lower().strip()
+    for sfx in _LEGAL_SUFFIXES:
+        if n.endswith(sfx):
+            return n[: -len(sfx)].rstrip(", ").strip()
+    return n
+
+
+def _has_structural_signal(needle_lower: str, filename: str, head_text: str, full_text_lower: str) -> bool:
+    """True iff `needle_lower` appears in: filename, OR head_text (first 200
+    chars of body), OR — for SEC marker case — BOTH marker AND name appear
+    within the first 2000 chars of body (real 10-K cover pages have both
+    within page 1).
+
+    v0.21.4 (review must-fix #5): the previous implementation was a 500-char
+    proximity window around marker-anywhere. An industry report aggregating
+    SEC filings ('Below we summarize the FORM 10-K of OpenAI, Anthropic...')
+    would still pass. Authentic filings have the marker + company name BOTH
+    on the cover page (first 2000 chars). Tightened accordingly.
+
+    `needle_lower` must already be lowercase + suffix-stripped.
+    `full_text_lower` must be lowercase (we lowercase once at call site).
+    """
+    if len(needle_lower) < 3:
+        return False
+    fn_lower = filename.lower()
+    if needle_lower in fn_lower:
+        return True
+    if needle_lower in head_text.lower():
+        return True
+    # v0.21.4 tightened: SEC marker AND needle must both appear in the
+    # first 2000 chars (cover-page region of an authentic 10-K/20-F).
+    cover_region = full_text_lower[:2000]
+    if needle_lower in cover_region:
+        for marker in _SEC_MARKERS:
+            if marker in cover_region:
+                return True
+    return False
+
+
+def body_text_match(
+    pdf_text: str,
+    filename: str,
+    competitors: list[dict],
+    min_occurrences: int = 5,
+    dominance_ratio: float = 3.0,
+) -> tuple[int, str, int] | None:
+    """Deterministic occurrence-count matcher with structural co-signal gate.
+
+    Returns (entity_id, name, count) when a competitor:
+      1. Is mentioned `≥ min_occurrences` in the first 60K chars of body
+      2. Beats the runner-up by `≥ dominance_ratio×` (or has ≥20 mentions
+         and beats by ≥2× — for the strong-but-noisy case)
+      3. ALSO has a structural co-signal (filename / cover page / SEC marker)
+
+    Without all three, returns None. Sub-millisecond for typical inputs.
+    """
+    if not pdf_text or not competitors:
+        return None
+    haystack = pdf_text[:60_000].lower()
+    head = pdf_text[:200]  # cover-page window for co-signal
+
+    counts: list[tuple[int, str, str, int]] = []  # (id, name, needle_lower, count)
+    for c in competitors:
+        name = c.get("name") or ""
+        if not name or len(name) < 3:
+            continue
+        needle = _strip_legal_suffix(name)
+        if len(needle) < 3:
+            continue
+        cnt = haystack.count(needle)
+        if cnt > 0:
+            counts.append((c["id"], name, needle, cnt))
+
+    if not counts:
+        return None
+    counts.sort(key=lambda x: x[3], reverse=True)
+    top_id, top_name, top_needle, top_count = counts[0]
+    runner = counts[1][3] if len(counts) > 1 else 0
+
+    # Min-occurrences floor
+    if top_count < min_occurrences:
+        return None
+
+    # Dominance: 3× and ≥10, OR 2× and ≥20 (strong-but-noisy)
+    primary_dominance = top_count >= 10 and top_count >= runner * dominance_ratio
+    fallback_dominance = top_count >= 20 and top_count >= runner * 2
+    if not (primary_dominance or fallback_dominance):
+        return None
+
+    # Co-signal gate (must-fix #1 from code review)
+    if not _has_structural_signal(top_needle, filename, head, haystack):
+        return None
+
+    return (top_id, top_name, top_count)
 
 
 def filename_match(filename: str, competitors: list[dict]) -> tuple[int, str, float] | None:
@@ -305,14 +443,21 @@ def classify(
     filename: str,
     pdf_text: str,
     competitors: list[dict],
+    *,
+    allow_llm: bool = False,
 ) -> ClassifiedReport:
     """End-to-end classifier for a single uploaded report.
 
-    Strategy:
+    Strategy (v0.21.4):
       1. Period extraction from filename + first 1000 chars (strict regex).
-      2. Filename → competitor match (deterministic).
-      3. If filename match weak, ask LLM (with explicit null option).
-      4. Return ClassifiedReport — caller persists.
+      2. Filename → competitor match (deterministic, sub-ms).
+      3. Body-text occurrence count + structural co-signal (deterministic, sub-ms).
+      4. If allow_llm=True AND nothing matched, ask LLM (opt-in only).
+      5. Return ClassifiedReport.
+
+    `allow_llm` defaults to False — bulk uploads must be fast and deterministic.
+    The per-file UI passes True if the user explicitly opts into the slower
+    "thorough" classification strategy.
     """
     out = ClassifiedReport(filename=filename, text_chars=len(pdf_text or ""))
 
@@ -322,7 +467,7 @@ def classify(
         period = parse_period(filename, "", strict=False)  # filename-only fallback
     out.period = period
 
-    # Filename match
+    # 1. Filename match (deterministic, sub-ms)
     fm = filename_match(filename, competitors)
     if fm and fm[2] >= 0.7:
         out.matched_entity_id = fm[0]
@@ -332,20 +477,35 @@ def classify(
         out.reasoning = f"Filename '{filename}' contains competitor name {fm[1]!r} (score={fm[2]:.2f})"
         return out
 
-    # LLM fallback
-    eid, conf, reasoning = llm_classify(filename, pdf_text, competitors)
-    if eid is not None:
-        ent = next((c for c in competitors if c["id"] == eid), None)
+    # 2. Body-text occurrence count + structural co-signal (v0.21.4)
+    btm = body_text_match(pdf_text, filename, competitors)
+    if btm is not None:
+        eid, name, count = btm
         out.matched_entity_id = eid
-        out.matched_entity_name = ent.get("name") if ent else None
-        out.match_confidence = conf  # type: ignore[assignment]
-        out.match_method = "llm_disambiguation"
-        out.reasoning = reasoning or "LLM disambiguation"
+        out.matched_entity_name = name
+        out.match_confidence = "high" if count >= 30 else "medium"
+        out.match_method = "body_text_count"
+        out.reasoning = f"Body text mentions {name!r} {count} times with structural co-signal (filename / cover-page / SEC marker)"
         return out
+
+    # 3. LLM fallback (opt-in only)
+    if allow_llm:
+        eid, conf, reasoning = llm_classify(filename, pdf_text, competitors)
+        if eid is not None:
+            ent = next((c for c in competitors if c["id"] == eid), None)
+            out.matched_entity_id = eid
+            out.matched_entity_name = ent.get("name") if ent else None
+            out.match_confidence = conf  # type: ignore[assignment]
+            out.match_method = "llm_disambiguation"
+            out.reasoning = reasoning or "LLM disambiguation"
+            return out
+        # LLM ran but said null — fall through with reasoning preserved
+        out.reasoning = reasoning or "LLM said no match"
+    else:
+        out.reasoning = "Filename + body-text deterministic match failed; LLM disambiguation disabled (allow_llm=False)"
 
     # No match — explicit
     out.match_confidence = "none"
-    out.reasoning = reasoning or "filename and content didn't match any competitor"
     return out
 
 

@@ -306,12 +306,14 @@ export const api = {
       matched_count: number
       unmatched_count: number
       failed_count: number
+      deferred_count?: number
       synthesized_profiles: number
       synthesizing?: boolean
       synthesizing_count?: number
       matched: any[]
       unmatched: any[]
       failed: any[]
+      deferred?: any[]
     }>
   },
   reassignArtifact: (artifactId: number, entityId: number) =>

@@ -73,12 +73,14 @@ export default function IndustryPulsePage({ params }: { params: { id: string } }
     matched_count: number
     unmatched_count: number
     failed_count: number
+    deferred_count?: number
     synthesized_profiles: number
     synthesizing?: boolean
     synthesizing_count?: number
     matched: any[]
     unmatched: any[]
     failed: any[]
+    deferred?: any[]
   } | null>(null)
   const [showManifest, setShowManifest] = useState(false)
   const [competitors, setCompetitors] = useState<{ id: number; name: string }[]>([])
@@ -266,6 +268,11 @@ export default function IndustryPulsePage({ params }: { params: { id: string } }
                   <XCircle size={12} weight="fill" /> {manifest.failed_count} failed
                 </span>
               )}
+              {(manifest.deferred_count ?? 0) > 0 && (
+                <span className="inline-flex items-center gap-1 text-orange-400" title="Cancelled by 25s soft-deadline. Re-upload these files in a smaller batch.">
+                  <Warning size={12} weight="fill" /> {manifest.deferred_count} deferred
+                </span>
+              )}
               {manifest.synthesizing ? (
                 <span className="text-cyan-400">
                   · {manifest.synthesizing_count} profile{manifest.synthesizing_count === 1 ? '' : 's'} synthesizing in background — refresh in 30–90s
@@ -338,6 +345,28 @@ export default function IndustryPulsePage({ params }: { params: { id: string } }
                         <span className="font-mono text-zinc-500">{r.filename}</span>
                         <span className="text-zinc-600 mx-1">·</span>
                         <span className="text-red-300">{r.error}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {(manifest.deferred?.length ?? 0) > 0 && (
+                <div>
+                  <h3 className="text-xs uppercase tracking-wider text-orange-400 mb-2">Deferred — re-upload these in a smaller batch</h3>
+                  <p className="text-[11px] text-zinc-500 mb-2">
+                    The 25-second soft-deadline cancelled these files before they could be processed.
+                    They were not extracted or saved. Re-upload them (ideally fewer at a time) to land them in this project.
+                  </p>
+                  <ul className="space-y-1.5">
+                    {(manifest.deferred ?? []).map((r, i) => (
+                      <li key={i} className="text-xs text-zinc-400">
+                        <Warning size={11} weight="fill" className="text-orange-500 inline mr-1" />
+                        <span className="font-mono text-zinc-500">{r.filename}</span>
+                        <span className="text-zinc-600 mx-1">·</span>
+                        <span className="text-orange-300">{r.reason}</span>
+                        {typeof r.elapsed_when_cancelled_s === 'number' && (
+                          <span className="text-zinc-600 ml-1">@ {r.elapsed_when_cancelled_s}s</span>
+                        )}
                       </li>
                     ))}
                   </ul>

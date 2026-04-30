@@ -2,6 +2,49 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.21.4] — 2026-04-30 — Bulk upload reliability: deterministic body-text matcher + thread-pool extraction + deferred bucket — first ship through full SDLC
+
+After three consecutive 502 ROUTER_EXTERNAL_TARGET_CONNECTION_ERROR_CD8 failures from the bulk-upload endpoint reached the user, we instituted a workspace SDLC discipline rule (`feedback_sdlc_enforcement.md`) and shipped this fix through the full stack: `/plan` → `code-reviewer` agent → amended plan → `/test`-first → `/build` → `code-reviewer` re-review → `/ship`. Plan + amendments at `tasks/plan.md`; review log at `tasks/plan.md` §7b.
+
+### Added — `agent/bulk_report_classifier.py`
+- **`body_text_match(pdf_text, filename, competitors, ...)`** — deterministic occurrence-count matcher. Top competitor must (a) be mentioned ≥5×, (b) beat the runner-up by ≥3× (or ≥2× with ≥20 absolute mentions), AND (c) pass the structural co-signal gate.
+- **`_has_structural_signal(needle, filename, head, full_text)`** — co-signal gate: needle must appear in EITHER the filename, OR the first 200 chars of body (cover page), OR — for SEC-marker case — BOTH the marker AND the needle must appear in the **first 2000 chars** (cover region of authentic 10-K/20-F/40-F filings).
+- **`_strip_legal_suffix`** — handles `, Inc.` / `LLC` / `Corporation` etc. so "Acme, Inc." matches "Acme" in the body.
+
+### Changed — `classify()` resolution order
+- `classify(filename, pdf_text, competitors, *, allow_llm=False)` — `allow_llm` default flipped to **False** (was True). Bulk path now never hits the LLM by default.
+- New resolution order: filename_match → body_text_match (with co-signal gate) → llm_classify (opt-in only) → unmatched.
+- `match_method` literal extended with `"body_text_count"`.
+
+### Refactored — `webapp/api/routes/knowledge.py:bulk_upload_reports`
+- New query param: **`classification_strategy: Literal["fast", "thorough"] = "fast"`** (replaces internal default — was `auto_synthesize` only). `"thorough"` enables LLM disambiguation; `"fast"` is fully deterministic.
+- **Magic-byte check** before pypdf invocation — files with `.pdf` extension but non-PDF bytes fail fast (`not_a_pdf_magic_bytes`) without spinning up a worker.
+- **`ThreadPoolExecutor(max_workers=3)` with `as_completed()` drain** — extract+classify in 3 parallel workers; DB writes serialized on main thread per-future as it resolves (SQLAlchemy session not thread-safe).
+- **25-second soft-deadline** — files cancelled by deadline land in a new `deferred[]` array, NOT `failed`. Frontend renders a "Re-upload these in a smaller batch" CTA. `pool.shutdown(wait=True, cancel_futures=True)` (Py 3.9+) cancels queued work but allows in-flight workers to complete (residual worst-case ~10s on big 10-Ks; documented inline).
+- **Per-future try/except** — one bad PDF doesn't poison the whole batch.
+- **Manifest invariant guard** — logs ERROR if `matched + unmatched + failed + deferred ≠ len(files)` so result-leaks become visible.
+- **Synthesis-failure stub artifact** (`_write_synth_failure_stub`) — when background synthesis returns empty or raises, write a `business_history` artifact titled "Synthesis failed · {entity}" with retry hint instead of silent log. UI surfaces it.
+
+### Frontend
+- `webapp/web/lib/api.ts:bulkUploadReports` response type extended with `deferred?: any[]` and `deferred_count?: number`.
+- `webapp/web/app/projects/[id]/industry-pulse/page.tsx` — manifest summary chip for deferred (orange Warning icon); dedicated "Deferred — re-upload these in a smaller batch" section listing filename + reason + elapsed-when-cancelled.
+
+### Tests
+- **NEW: `tests/test_bulk_upload_endpoint.py`** — endpoint integration test using TestClient + real synthetic PDFs (reportlab). Asserts wall-clock budget (<15s for 8 PDFs), magic-byte rejection, industry-report-stays-unmatched, manifest contract.
+- **NEW: `tests/fixtures/make_pdf.py`** — synthetic PDF generator. Pinned dep, never silent-skipped.
+- **NEW: `requirements-dev.txt`** — pins `reportlab>=4.0.0`, `pytest-timeout>=2.1.0`. CI / local must install; `pytest.xfail` (not skip) if missing.
+- **+13 unit tests** in `tests/test_bulk_report_classifier.py` covering: clear-winner with each co-signal source, killer "industry report returns None" (no co-signal), SEC-marker-deep-in-body returns None (the v0.21.4 must-fix #5 lock-in), ambiguous, weak, legal-suffix stripping, LLM-skip when allow_llm=False.
+
+### Workspace process additions
+- **`/post-task-eval` skill upgraded** with new `feature_endpoint` task type + 4 enforcement checks (plan-trail, endpoint-latency smoke, integration-test exists, failure-mode coverage). Caught "no plan was written" before code in this very ship.
+- **Memory rule saved**: `feedback_sdlc_enforcement.md` — for non-trivial features (network/IO/upload/LLM/new endpoint), follow `/plan` → code-reviewer → `/test` → `/build` → `/review` → `/ship`. Workspace-level, applies to all projects.
+
+### Why this matters
+Three consecutive user-visible failures (CD8 timeout × 2 + OOM risk) reached production because validation only checked `/api/health` — never the actual broken endpoint. This ship: 229/229 backend tests pass; full endpoint integration test runs against TestClient with real PDFs in 1.33s; code-reviewer agent reviewed the plan AND the diff; 5 must-fix items found and addressed before push, not after. The SDLC stack worked.
+
+### Known follow-up (deferred to v0.21.5)
+- Filename co-signal uses naive substring match (`needle in filename`). A competitor literally named "Apple" would match "pineapple-research.pdf". Word-boundary regex fix planned. Low-probability edge case; SEC-marker tightening + dominance gate already cover the high-impact false-match paths.
+
 ## [0.21.3] — 2026-04-30 — Bulk upload: fix CD8 502 on multi-PDF folders
 
 User report: bulk-uploading a folder produced *"502 ROUTER_EXTERNAL_TARGET_CONNECTION_ERROR_CD8"*. Root cause: the in-request synthesis loop (5–15s per matched competitor) plus PDF extraction blew past Railway's edge-proxy timeout when the folder had several files. Container also at risk of OOM if many PDFs were buffered simultaneously.
