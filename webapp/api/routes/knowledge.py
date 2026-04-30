@@ -1214,7 +1214,6 @@ async def bulk_upload_reports(
         synthesize_business_profile,
     )
     from agent.bulk_report_classifier import classify, ClassifiedReport
-    from concurrent.futures import ThreadPoolExecutor
     from webapp.api.models import Project
     from collections import defaultdict
 
@@ -1241,6 +1240,17 @@ async def bulk_upload_reports(
     unmatched: list[dict] = []
     failed: list[dict] = []
     new_artifacts_by_entity: dict[int, list[int]] = defaultdict(list)
+
+    # v0.21.3: cap batch size to prevent Railway OOM. 20 PDFs × 50MB =
+    # 1GB peak memory if all are buffered simultaneously. We process
+    # sequentially with each blob discarded after extraction, but if the
+    # CALLER tries to upload 50 files at once we still want to fail fast
+    # with a clear error rather than CD8 mid-stream.
+    if len(files) > 30:
+        raise HTTPException(
+            status_code=413,
+            detail=f"{len(files)} files exceeds the 30-file batch cap. Split into multiple uploads."
+        )
 
     for f in files:
         # File hygiene
@@ -1308,20 +1318,33 @@ async def bulk_upload_reports(
         else:
             unmatched.append(record)
 
-    # Synthesize business profiles per matched competitor — parallel,
-    # capped to avoid pressure on Groq quota.
-    synth_count = 0
+        # v0.21.3: free the blob ASAP after extraction. With 20+ uploads
+        # in a single request, holding all bytes resident is what triggers
+        # Railway OOM → CD8 502s.
+        del blob
+
+    # v0.21.3: Detach synthesis from the request. Synthesis takes ~5-15s per
+    # competitor and bulk uploads can hit 5-20 competitors — total request
+    # time can blow past Railway's edge proxy timeout (~60s) and trigger a
+    # 502 ROUTER_EXTERNAL_TARGET_CONNECTION_ERROR. We now fire-and-forget
+    # synthesis in detached daemon threads, return the manifest immediately,
+    # and let the user refresh Industry Pulse to see new profiles land.
+    synth_count = 0  # always 0 in v0.21.3 — synthesis is now async
+    synthesizing = False
     if auto_synthesize and new_artifacts_by_entity:
         ent_map = {c.id: c for c in competitors_q}
+        project_name_snapshot = project.name
+        project_desc_snapshot = project.description or ""
+        target_ids = list(new_artifacts_by_entity.keys())
+        synthesizing = len(target_ids) > 0
 
-        def _synth(entity_id: int) -> int:
+        def _synth_one_detached(entity_id: int) -> None:
+            """Run in a detached daemon thread — owns its own DB session."""
             entity = ent_map.get(entity_id)
             if not entity:
-                return 0
-            # Pull ALL annual+quarterly reports for this entity to feed the
-            # synthesis. Multi-report aggregation lets the synthesizer spot
-            # multi-period trends and contrarian patterns.
-            db_local = next(get_db())  # type: ignore[arg-type]
+                return
+            from webapp.api.db import SessionLocal
+            db_local = SessionLocal()
             try:
                 arts = (
                     db_local.query(KnowledgeArtifact)
@@ -1335,44 +1358,52 @@ async def bulk_upload_reports(
                 relevant = [a for a in arts if a.entity_ids_json and entity_id in a.entity_ids_json]
                 sources = [
                     {"title": a.title, "text": a.content_md or "", "year": ""}
-                    for a in relevant[:6]  # cap so we don't blow LLM context
+                    for a in relevant[:6]
                 ]
                 if not sources:
-                    return 0
+                    return
                 profile = synthesize_business_profile(
                     competitor=entity.name,
-                    project_name=project.name,
-                    project_description=project.description or "",
+                    project_name=project_name_snapshot,
+                    project_description=project_desc_snapshot,
                     sources=sources,
                 )
                 if not profile.market_thesis and not profile.contrarian_insights:
-                    return 0
+                    return
                 prof_art = KnowledgeArtifact(
                     project_id=project_id,
                     artifact_type="business_history",
                     title=f"Business history · {entity.name}",
                     content_md=profile.to_markdown(),
                     entity_ids_json=[entity_id],
-                    generated_by_agent="business_history_synth_bulk",
+                    generated_by_agent="business_history_synth_bulk_async",
                 )
                 db_local.add(prof_art)
                 db_local.commit()
-                return 1
             except Exception as exc:
-                logger.warning("[bulk_upload] synth failed for entity %s: %s", entity_id, exc)
-                return 0
+                logger.warning("[bulk_upload:async] synth failed for entity %s: %s", entity_id, exc)
             finally:
                 db_local.close()
 
-        with ThreadPoolExecutor(max_workers=4) as ex:
-            results = list(ex.map(_synth, list(new_artifacts_by_entity.keys())))
-        synth_count = sum(results)
+        # Cap concurrent synthesis at 3 to avoid Groq rate-limit spikes when
+        # many competitors land at once. Threads are daemon so they don't
+        # block container shutdown if a deploy lands mid-synthesis.
+        import threading
+        from concurrent.futures import ThreadPoolExecutor as _TPool
+
+        def _runner():
+            with _TPool(max_workers=3) as ex:
+                list(ex.map(_synth_one_detached, target_ids))
+
+        threading.Thread(target=_runner, daemon=True).start()
 
     return {
         "matched_count": len(matched),
         "unmatched_count": len(unmatched),
         "failed_count": len(failed),
         "synthesized_profiles": synth_count,
+        "synthesizing": synthesizing,
+        "synthesizing_count": len(new_artifacts_by_entity) if synthesizing else 0,
         "matched": matched,
         "unmatched": unmatched,
         "failed": failed,

@@ -307,6 +307,8 @@ export const api = {
       unmatched_count: number
       failed_count: number
       synthesized_profiles: number
+      synthesizing?: boolean
+      synthesizing_count?: number
       matched: any[]
       unmatched: any[]
       failed: any[]

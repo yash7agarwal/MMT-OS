@@ -74,6 +74,8 @@ export default function IndustryPulsePage({ params }: { params: { id: string } }
     unmatched_count: number
     failed_count: number
     synthesized_profiles: number
+    synthesizing?: boolean
+    synthesizing_count?: number
     matched: any[]
     unmatched: any[]
     failed: any[]
@@ -264,9 +266,15 @@ export default function IndustryPulsePage({ params }: { params: { id: string } }
                   <XCircle size={12} weight="fill" /> {manifest.failed_count} failed
                 </span>
               )}
-              <span className="text-zinc-500">
-                · {manifest.synthesized_profiles} profile{manifest.synthesized_profiles === 1 ? '' : 's'} synthesized
-              </span>
+              {manifest.synthesizing ? (
+                <span className="text-cyan-400">
+                  · {manifest.synthesizing_count} profile{manifest.synthesizing_count === 1 ? '' : 's'} synthesizing in background — refresh in 30–90s
+                </span>
+              ) : (
+                <span className="text-zinc-500">
+                  · {manifest.synthesized_profiles} profile{manifest.synthesized_profiles === 1 ? '' : 's'} synthesized
+                </span>
+              )}
             </div>
             {showManifest ? <CaretUp size={14} className="text-zinc-500" /> : <CaretDown size={14} className="text-zinc-500" />}
           </button>

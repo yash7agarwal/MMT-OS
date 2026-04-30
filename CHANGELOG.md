@@ -2,6 +2,20 @@
 
 All notable changes are documented here following [Semantic Versioning](https://semver.org/).
 
+## [0.21.3] — 2026-04-30 — Bulk upload: fix CD8 502 on multi-PDF folders
+
+User report: bulk-uploading a folder produced *"502 ROUTER_EXTERNAL_TARGET_CONNECTION_ERROR_CD8"*. Root cause: the in-request synthesis loop (5–15s per matched competitor) plus PDF extraction blew past Railway's edge-proxy timeout when the folder had several files. Container also at risk of OOM if many PDFs were buffered simultaneously.
+
+### Changed
+- **Synthesis is now async**: bulk-upload returns immediately after extraction + classification + raw-artifact persistence. Business-history synthesis fires in a detached daemon thread (`ThreadPoolExecutor(max_workers=3)` runs in the background after the response is sent). Each thread owns its own DB session.
+- **Response shape**: added `synthesizing: true` and `synthesizing_count: N` flags. `synthesized_profiles` is now `0` on first response — profiles land in the DB as the background threads finish.
+- **30-file batch cap**: requests with >30 PDFs return 413 Payload Too Large with a clear "split into multiple uploads" message. Prevents OOM on extreme batches.
+- **Per-file blob freed eagerly**: `del blob` after extraction so peak memory stays at one PDF in flight, not all of them.
+- **Manifest UI**: shows `N profiles synthesizing in background — refresh in 30–90s` when async synthesis is in flight, instead of the misleading "0 synthesized" count.
+
+### Why this matters
+Before: user uploads 10-PDF folder → 30–90s of in-request work → Railway router gives up → 502 → user sees nothing land. After: same upload returns in 5–10s with a clear "synthesizing in background" state; profiles appear on Industry Pulse refresh a minute later. No more CD8.
+
 ## [0.21.2] — 2026-04-30 — Hide / delete projects from the home page
 
 ### Added
